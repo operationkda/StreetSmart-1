@@ -1,12 +1,24 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { TaskPanel } from '@/components/TaskPanel.jsx'
 import { apiClient } from '@/api/client.js'
 import { useAppState } from '@/state/AppState.jsx'
+
+function decodeTokenRole(token) {
+  if (!token) return null
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return payload.role ?? null
+  } catch {
+    return null
+  }
+}
 
 export function HomePage() {
   const [email, setEmail] = useState('')
   const [error, setError] = useState('')
   const { authToken, setAuthToken } = useAppState()
+  const role = decodeTokenRole(authToken)
 
   async function onLogin(event) {
     event.preventDefault()
@@ -39,13 +51,20 @@ export function HomePage() {
           </button>
         </form>
       ) : (
-        <button type="button" onClick={() => setAuthToken('')} style={{ marginBottom: 16 }}>
-          Logout
-        </button>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
+          <button type="button" onClick={() => setAuthToken('')} style={{ padding: '8px 14px', borderRadius: 8 }}>
+            Logout
+          </button>
+          {role === 'admin' ? (
+            <Link to="/admin" style={{ fontSize: 14 }}>
+              Admin dashboard →
+            </Link>
+          ) : null}
+        </div>
       )}
 
       {error ? <p style={{ color: '#fca5a5' }}>{error}</p> : null}
-      <TaskPanel />
+      {authToken ? <TaskPanel /> : null}
     </main>
   )
 }

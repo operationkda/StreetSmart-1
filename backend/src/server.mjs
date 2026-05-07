@@ -485,6 +485,31 @@ async function dbCreateTask(title, owner) {
   return task
 }
 
+async function dbUpdateTask(id, title, owner) {
+  if (DB_ENABLED) {
+    const result = await query(
+      'UPDATE tasks SET title = $1 WHERE id = $2 AND owner = $3 RETURNING id, title, owner, created_at',
+      [title, id, owner],
+    )
+    return result.rows[0] ?? null
+  }
+  const task = memoryTasks.find((t) => t.id === id && t.owner === owner)
+  if (!task) return null
+  task.title = title
+  return { ...task }
+}
+
+async function dbDeleteTask(id, owner) {
+  if (DB_ENABLED) {
+    const result = await query('DELETE FROM tasks WHERE id = $1 AND owner = $2 RETURNING id', [id, owner])
+    return result.rowCount > 0
+  }
+  const index = memoryTasks.findIndex((t) => t.id === id && t.owner === owner)
+  if (index === -1) return false
+  memoryTasks.splice(index, 1)
+  return true
+}
+
 async function dbListAllTasks() {
   if (DB_ENABLED) {
     const result = await query('SELECT id, title, owner, created_at FROM tasks ORDER BY created_at DESC')
@@ -609,6 +634,68 @@ const server = createServer(async (req, res) => {
         requestId,
       )
       send(res, 201, { task })
+      return
+    }
+
+    // -----------------------------------------------------------------------
+    // PUT /api/tasks/:id
+    // -----------------------------------------------------------------------
+    const putTaskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/)
+    if (putTaskMatch && req.method === 'PUT') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      const taskId = putTaskMatch[1]
+      const body = await parseBody(req)
+      const errors = validateBody(body, {
+        title: { required: true, type: 'string', maxLength: 500 },
+      })
+
+      if (errors.length) {
+        send(res, 400, { error: errors[0] })
+        return
+      }
+
+      const updated = await dbUpdateTask(taskId, body.title.trim(), auth.sub)
+      if (!updated) {
+        send(res, 404, { error: 'not found' })
+        return
+      }
+
+      void runAsyncTask(
+        audit('task.update', { requestId, sub: auth.sub, taskId }),
+        'audit log',
+        requestId,
+      )
+      send(res, 200, { task: updated })
+      return
+    }
+
+    // -----------------------------------------------------------------------
+    // DELETE /api/tasks/:id
+    // -----------------------------------------------------------------------
+    const deleteTaskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/)
+    if (deleteTaskMatch && req.method === 'DELETE') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      const taskId = deleteTaskMatch[1]
+      const deleted = await dbDeleteTask(taskId, auth.sub)
+      if (!deleted) {
+        send(res, 404, { error: 'not found' })
+        return
+      }
+
+      void runAsyncTask(
+        audit('task.delete', { requestId, sub: auth.sub, taskId }),
+        'audit log',
+        requestId,
+      )
+      send(res, 204)
       return
     }
 
