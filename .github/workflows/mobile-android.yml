@@ -1,0 +1,108 @@
+# Builds a signed Android App Bundle (AAB) and publishes it to the
+# Google Play Internal Testing track.
+#
+# Prerequisites (set in the "production" GitHub environment):
+#   Secrets:
+#     ANDROID_KEYSTORE_BASE64    - base64-encoded JKS keystore file
+#     ANDROID_KEY_ALIAS          - alias of the signing key inside the keystore
+#     ANDROID_KEY_PASSWORD       - key password
+#     ANDROID_STORE_PASSWORD     - keystore password
+#     GOOGLE_PLAY_SERVICE_ACCOUNT_JSON - service-account JSON for the Play API
+#   Variables:
+#     VITE_API_BASE_URL          - live backend URL (baked into the web build)
+
+name: Mobile — Android
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    name: Build & publish Android AAB
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Web build ─────────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build web app
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: npm run build
+
+      # ── Capacitor Android project ─────────────────────────────────────────────
+      - name: Install @capacitor/android
+        run: npm install @capacitor/android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Initialize Android project and sync web assets
+        run: |
+          # `cap add android` is idempotent — it exits non-zero if the folder
+          # already exists, which is fine; always follow up with cap sync.
+          npx cap add android 2>/dev/null || true
+          npx cap sync android
+
+      # ── Gradle build ──────────────────────────────────────────────────────────
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Build release AAB
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon
+
+      # ── Signing ───────────────────────────────────────────────────────────────
+      - name: Sign AAB with jarsigner
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
+          jarsigner -verbose \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore /tmp/signing.jks \
+            -storepass "$STORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            android/app/build/outputs/bundle/release/app-release.aab \
+            "$KEY_ALIAS"
+          rm -f /tmp/signing.jks
+
+      # ── Artifacts ─────────────────────────────────────────────────────────────
+      - name: Upload AAB as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      # ── Publish to Google Play ────────────────────────────────────────────────
+      - name: Upload to Google Play Internal Testing
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+        # Pinned to v1.1.5 (SHA: e738b9dd) for reproducibility and supply-chain security.
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.operationkda.streetsmart
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: draft

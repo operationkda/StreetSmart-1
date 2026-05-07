@@ -138,7 +138,9 @@ push notifications, and CI pipeline setup.
 - [ ] Set the app ID (`com.operationkda.streetsmart`) in both native projects.
 - [ ] Set `VITE_API_BASE_URL` to the live backend in the build environment and rebuild before syncing.
 - [ ] Submit to Google Play Internal Testing and Apple TestFlight for beta validation.
-- [ ] Add GitHub Actions workflows for automated signed APK/AAB and IPA builds (see `docs/mobile.md §7`).
+- [x] Add GitHub Actions workflows for automated signed APK/AAB and IPA builds:
+  - `.github/workflows/mobile-android.yml` — builds + signs AAB, uploads to Play Internal Testing.
+  - `.github/workflows/mobile-ios.yml` — builds + signs IPA, submits to TestFlight.
 
 ---
 
