@@ -1,0 +1,284 @@
+name: Staging UAT (Step 3 + Step 4)
+
+# Runs on every push to release-candidate branches, main, and on demand.
+# Simulates a full staging environment using Postgres and the backend Docker
+# process so that the CI gate mirrors the documented Step 3 UAT procedure.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - 'copilot/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Step 3 — Staging UAT
+  # ---------------------------------------------------------------------------
+  staging-uat:
+    name: Step 3 – Staging UAT
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: streetsmart
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: streetsmart
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://streetsmart:ci-password@localhost:5432/streetsmart
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Frontend quality checks ─────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      # ── Backend quality checks ──────────────────────────────────────────────
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Backend syntax check
+        working-directory: backend
+        run: npm run check
+
+      # ── Start backend against Postgres ──────────────────────────────────────
+      - name: Start backend server
+        working-directory: backend
+        env:
+          PORT: 4000
+          NODE_ENV: staging
+          JWT_SECRET: ci-jwt-secret-32-bytes-minimum-ok
+          STRIPE_WEBHOOK_SECRET: whsec_dev
+          STRIPE_WEBHOOK_TOLERANCE_SECONDS: 300
+          STRIPE_WEBHOOK_MAX_FUTURE_SECONDS: 60
+          AUTH_MODE: dev
+          DEV_ADMIN_EMAILS: admin@example.com
+          FILE_BUCKET_BASE_URL: https://example-bucket.ci
+          FILE_BUCKET_NAME: streetsmart-ci
+          FILE_BUCKET_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: ci-key
+          AWS_SECRET_ACCESS_KEY: ci-secret
+          AUDIT_SPOOL_FILE_PATH: /tmp/streetsmart-audit-events.ndjson
+        run: |
+          node src/server.mjs > /tmp/backend.log 2>&1 &
+          echo $! > /tmp/backend.pid
+          # Wait for the backend to accept connections (up to 15 s).
+          for i in $(seq 1 15); do
+            # Any HTTP response (including 401) means the server is up.
+            # Do NOT use -f; we expect 401 (unauthenticated) as a readiness signal.
+            CODE=$(curl -so /dev/null -w "%{http_code}" http://localhost:4000/api/tasks 2>/dev/null || true)
+            if echo "$CODE" | grep -qE '^[0-9]+$' && [ "$CODE" != "000" ]; then
+              echo "Backend is up (HTTP $CODE)"
+              break
+            fi
+            sleep 1
+          done
+
+      # ── UAT smoke test — dev auth mode ──────────────────────────────────────
+      - name: Run UAT smoke tests (dev auth mode)
+        working-directory: backend
+        env:
+          UAT_BASE_URL: http://localhost:4000
+          UAT_AUTH_MODE: dev
+          UAT_DEV_EMAIL: admin@example.com
+          UAT_ADMIN_EXPECTED_STATUS: 200
+        run: npm run uat:smoke
+
+      # ── Stripe webhook replay ────────────────────────────────────────────────
+      - name: Replay signed Stripe webhook
+        run: |
+          TS=$(date +%s)
+          PAYLOAD='{"id":"evt_ci_staging","type":"payment_intent.succeeded"}'
+          SIG=$(TS="$TS" PAYLOAD="$PAYLOAD" node -e "
+            const {createHmac}=require('crypto');
+            const ts=process.env.TS, payload=process.env.PAYLOAD;
+            console.log(createHmac('sha256','whsec_dev').update(ts+'.'+payload).digest('hex'));
+          ")
+          HTTP=$(curl -s -o /tmp/stripe_resp.json -w "%{http_code}" \
+            -X POST http://localhost:4000/api/webhooks/stripe \
+            -H "Content-Type: application/json" \
+            -H "Stripe-Signature: t=$TS,v1=$SIG" \
+            --data "$PAYLOAD")
+          echo "Stripe webhook HTTP status: $HTTP"
+          cat /tmp/stripe_resp.json
+          [ "$HTTP" = "200" ] || (echo "::error::Stripe webhook replay returned $HTTP" && exit 1)
+
+      # ── Audit and queue verification ────────────────────────────────────────
+      # When DATABASE_URL is set the server writes audit events to the audit_events
+      # table; when running without a DB it falls back to a local NDJSON spool file.
+      # This step handles both modes.
+      - name: Verify audit and queue behavior
+        run: |
+          echo "=== Audit events (DB) ==="
+          node -e "
+            import('node:child_process').then(({execSync})=>{
+              // psql-based query for CI where DATABASE_URL is set
+              const out=execSync(
+                'psql \$DATABASE_URL -t -c \"SELECT event FROM audit_events ORDER BY created_at\"',
+                {encoding:'utf8'}
+              );
+              console.log(out);
+              if(!out.includes('login'))throw new Error('Missing audit entry: login');
+              if(!out.includes('stripe.webhook'))throw new Error('Missing audit entry: stripe.webhook');
+              console.log('Audit entries verified (DB)');
+            });
+          " || {
+            # Fallback: check spool file (in-memory mode)
+            echo "=== Audit spool (file fallback) ==="
+            SPOOL=${AUDIT_SPOOL_FILE_PATH:-/tmp/streetsmart-audit-events.ndjson}
+            cat "$SPOOL" || true
+            grep -q '"event":"login"' "$SPOOL" \
+              || (echo "::error::Missing audit entry: login" && exit 1)
+            grep -q '"event":"stripe.webhook"' "$SPOOL" \
+              || (echo "::error::Missing audit entry: stripe.webhook" && exit 1)
+            echo "Audit entries verified (spool file)."
+          }
+
+      # ── Backend log on failure ──────────────────────────────────────────────
+      - name: Dump backend log on failure
+        if: failure()
+        run: cat /tmp/backend.log || true
+
+  # ---------------------------------------------------------------------------
+  # Step 4 — Data migration dry-run
+  # ---------------------------------------------------------------------------
+  migration-dry-run:
+    name: Step 4 – Data migration dry-run
+    runs-on: ubuntu-latest
+    needs: staging-uat
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: streetsmart
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: streetsmart
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://streetsmart:ci-password@localhost:5432/streetsmart
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      # ── Baseline export (should be 0 rows on fresh DB) ────────────────────
+      - name: Baseline export
+        working-directory: backend
+        run: npm run data:export -- ./tmp/baseline-export.json
+
+      - name: Assert baseline is empty
+        run: |
+          COUNT=$(node -e "const d=require('./backend/tmp/baseline-export.json');console.log(d.tasks.length)")
+          echo "Baseline task count: $COUNT"
+          [ "$COUNT" = "0" ] || (echo "::error::Expected 0 baseline rows, got $COUNT" && exit 1)
+
+      # ── Synthetic Base44 export → transform ───────────────────────────────
+      - name: Create synthetic Base44 export
+        run: |
+          cat > /tmp/base44-export.json <<'JSON'
+          {
+            "records": [
+              {"_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Task A","userEmail":"alice@example.com","timestamp":"2026-01-15T09:00:00Z"},
+              {"_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","task_title":"Task B","createdBy":"bob@example.com","created":"2026-02-20T14:30:00Z"},
+              {"_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","task_title":"Task B (duplicate key — same id)","createdBy":"bob@example.com","created":"2026-02-20T14:30:00Z"},
+              {"name":"Task no ID","email":"carol@example.com"}
+            ]
+          }
+          JSON
+
+      - name: Transform Base44 export
+        working-directory: backend
+        run: npm run data:transform -- /tmp/base44-export.json ./tmp/tasks-import.json
+
+      - name: Assert transform output
+        run: |
+          node -e "
+            const d=require('./backend/tmp/tasks-import.json');
+            const count=d.tasks.length;
+            const dups=4-count;
+            console.log(JSON.stringify({taskCount:count,droppedDuplicates:dups}));
+            if(count!==3)throw new Error('Expected 3 tasks after dedup, got '+count);
+            const hasGeneratedId=d.tasks.some(t=>!['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'].includes(t.id));
+            if(!hasGeneratedId)throw new Error('Expected one generated UUID for the record with no source id');
+          "
+
+      # ── Import and verify row counts ──────────────────────────────────────
+      - name: Import transformed tasks
+        working-directory: backend
+        run: npm run data:import -- ./tmp/tasks-import.json
+
+      - name: Export post-import and validate row count
+        working-directory: backend
+        run: npm run data:export -- ./tmp/post-import-export.json
+
+      - name: Assert post-import row count
+        run: |
+          IMPORT_COUNT=$(node -e "const d=require('./backend/tmp/tasks-import.json');console.log(d.tasks.length)")
+          EXPORT_COUNT=$(node -e "const d=require('./backend/tmp/post-import-export.json');console.log(d.tasks.length)")
+          echo "Imported: $IMPORT_COUNT, Re-exported: $EXPORT_COUNT"
+          [ "$IMPORT_COUNT" = "$EXPORT_COUNT" ] \
+            || (echo "::error::Import count ($IMPORT_COUNT) does not match export count ($EXPORT_COUNT)" && exit 1)
+          echo "Row count validated."
+
+      # ── Spot-check records ────────────────────────────────────────────────
+      - name: Spot-check imported records
+        run: |
+          node -e "
+            const d=require('./backend/tmp/post-import-export.json');
+            const taskA=d.tasks.find(t=>t.id==='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+            if(!taskA)throw new Error('Task A not found in export');
+            if(taskA.owner!=='alice@example.com')throw new Error('Task A owner mismatch: '+taskA.owner);
+            if(taskA.title!=='Task A')throw new Error('Task A title mismatch: '+taskA.title);
+            const taskB=d.tasks.find(t=>t.id==='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+            if(!taskB)throw new Error('Task B not found in export');
+            if(taskB.owner!=='bob@example.com')throw new Error('Task B owner mismatch: '+taskB.owner);
+            console.log(JSON.stringify({status:'spot-check-passed',tasks:d.tasks.map(t=>({id:t.id,title:t.title,owner:t.owner}))}));
+          "
