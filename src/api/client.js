@@ -31,10 +31,13 @@ async function parseErrorResponse(response) {
 /**
  * Returns true for fetch-level failures (no network, DNS, connection refused)
  * that are safe to retry. HTTP error responses are authoritative and must not
- * be retried automatically.
+ * be retried automatically. In all major browsers, network-layer failures
+ * surface as TypeError (e.g. "Failed to fetch", "Load failed", "NetworkError
+ * when attempting to fetch resource"), so checking instanceof TypeError is
+ * sufficient here — response.json() throws SyntaxError, not TypeError.
  */
 function isRetryable(error) {
-  return error instanceof TypeError && error.message.toLowerCase().includes('fetch')
+  return error instanceof TypeError
 }
 
 function sleep(ms) {
