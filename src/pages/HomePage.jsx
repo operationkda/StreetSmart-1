@@ -4,6 +4,11 @@ import { TaskPanel } from '@/components/TaskPanel.jsx'
 import { apiClient } from '@/api/client.js'
 import { useAppState } from '@/state/AppState.jsx'
 
+/**
+ * Extracts the `role` claim from the JWT payload for UI-only hints
+ * (e.g. showing the admin link). The backend enforces RBAC on every request;
+ * this does NOT replace server-side authorization.
+ */
 function decodeTokenRole(token) {
   if (!token) return null
   try {

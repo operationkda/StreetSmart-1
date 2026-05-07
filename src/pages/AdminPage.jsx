@@ -1,12 +1,35 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { apiClient } from '@/api/client.js'
+import { useAppState } from '@/state/AppState.jsx'
+
+function decodeTokenRole(token) {
+  if (!token) return null
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return payload.role ?? null
+  } catch {
+    return null
+  }
+}
 
 export function AdminPage() {
+  const { authToken } = useAppState()
+  const navigate = useNavigate()
+  const role = decodeTokenRole(authToken)
+
   const [tasks, setTasks] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Redirect unauthenticated or non-admin users before making any API call.
+    // The backend also enforces RBAC and will return 403 for non-admins.
+    if (!authToken || role !== 'admin') {
+      navigate('/', { replace: true })
+      return
+    }
+
     apiClient
       .listAdminTasks()
       .then((response) => {
@@ -17,7 +40,7 @@ export function AdminPage() {
         setError(requestError.message)
         setLoading(false)
       })
-  }, [])
+  }, [authToken, role, navigate])
 
   return (
     <main style={{ maxWidth: 760, margin: '48px auto', padding: 16 }}>

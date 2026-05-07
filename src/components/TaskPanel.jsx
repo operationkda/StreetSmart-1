@@ -10,7 +10,10 @@ function TaskRow({ task, onUpdated, onDeleted }) {
   async function onSave(event) {
     event.preventDefault()
     const trimmed = draft.trim()
-    if (!trimmed || trimmed === task.title) {
+    if (!trimmed) {
+      return
+    }
+    if (trimmed === task.title) {
       setEditing(false)
       setDraft(task.title)
       return
