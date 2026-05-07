@@ -91,3 +91,38 @@ Set `AUDIT_FORWARD_URL` to enable periodic forwarding to SIEM/webhook receivers.
 4. Trigger login and verify:
    - pg-boss tables and job execution logs (`send-welcome-email`).
    - `audit_events` rows insert and `forwarded_at` updates when `AUDIT_FORWARD_URL` is set.
+
+## Staging smoke/UAT automation
+
+Run an automated endpoint smoke test suite against a deployed environment:
+
+```bash
+cd backend
+UAT_BASE_URL=https://staging-api.example.com \
+UAT_AUTH_MODE=dev \
+UAT_DEV_EMAIL=admin@example.com \
+UAT_ADMIN_EXPECTED_STATUS=200 \
+npm run uat:smoke
+```
+
+OIDC mode:
+
+```bash
+cd backend
+UAT_BASE_URL=https://staging-api.example.com \
+UAT_AUTH_MODE=oidc \
+UAT_OIDC_PROVIDER_TOKEN=<provider-jwt> \
+UAT_ADMIN_EXPECTED_STATUS=200 \
+npm run uat:smoke
+```
+
+## Base44 export normalization for import
+
+Transform Base44 JSON exports into the `{ tasks: [...] }` format expected by
+`npm run data:import`:
+
+```bash
+cd backend
+npm run data:transform -- ./tmp/base44-export.json ./tmp/tasks-import.json
+npm run data:import -- ./tmp/tasks-import.json
+```

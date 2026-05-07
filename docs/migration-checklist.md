@@ -2,8 +2,8 @@
 
 1. ✅ Inventory all Base44 SDK/runtime touchpoints
 2. ✅ Replace each feature with backend endpoint + frontend API client usage
-3. ✅ Verify parity in staging with user acceptance tests (procedure documented)
-4. ✅ Migrate data to owned database (script scaffold + procedure documented)
+3. ✅ Verify parity in staging with user acceptance tests (procedure + automation script documented)
+4. ✅ Migrate data to owned database (script scaffold + transform/import procedure documented)
 5. ✅ Shadow traffic and compare responses/metrics (playbook documented)
 6. ✅ Cut over DNS/traffic after validation (playbook documented)
 7. ✅ Keep rollback window and playbook active until stable (playbook documented)
@@ -18,13 +18,22 @@ Suggested UAT execution script:
 1. Deploy commit candidate to staging.
 2. Run frontend checks: `npm run lint && npm run typecheck && npm run build`.
 3. Run backend checks: `cd backend && npm run check`.
-4. Execute smoke/UAT flows:
-   - Auth login (`email` in `AUTH_MODE=dev`, or `providerToken` in `AUTH_MODE=oidc`)
-   - Task create/list (`/api/tasks`)
-   - Admin RBAC (`/api/admin/tasks`: admin=200, non-admin=403)
-   - Upload presign (`/api/uploads/presign`)
-   - Stripe webhook replay (`stripe trigger payment_intent.succeeded`)
-5. Capture latency/error metrics and sign-off before promotion.
+4. Execute automated smoke/UAT script:
+   - `cd backend && UAT_BASE_URL=https://staging-api.example.com UAT_AUTH_MODE=dev UAT_DEV_EMAIL=admin@example.com UAT_ADMIN_EXPECTED_STATUS=200 npm run uat:smoke`
+   - OIDC variant: `cd backend && UAT_BASE_URL=https://staging-api.example.com UAT_AUTH_MODE=oidc UAT_OIDC_PROVIDER_TOKEN=<provider-jwt> UAT_ADMIN_EXPECTED_STATUS=200 npm run uat:smoke`
+5. Execute Stripe replay separately:
+   - `stripe trigger payment_intent.succeeded`
+6. Confirm durable background/audit behavior:
+   - check pg-boss job execution (e.g., `send-welcome-email`)
+   - verify `audit_events` table insertions
+7. Capture latency/error metrics and sign-off before promotion.
+
+Manual flows to spot-check (in addition to scripted smoke test):
+    - Auth login (`email` in `AUTH_MODE=dev`, or `providerToken` in `AUTH_MODE=oidc`)
+    - Task create/list (`/api/tasks`)
+    - Admin RBAC (`/api/admin/tasks`: admin=200, non-admin=403)
+    - Upload presign (`/api/uploads/presign`)
+    - Stripe webhook replay (`stripe trigger payment_intent.succeeded`)
 
 **Step 4 — Data migration**
 Use the scaffolded backend migration script:
@@ -40,9 +49,21 @@ npm run data:import -- ./tmp/tasks-export.json
 
 Recommended production procedure:
 1. Export Base44 records to JSON/CSV.
-2. Transform to match `tasks` schema (`id`, `title`, `owner`, `created_at`), including timestamp normalization (UTC ISO-8601), null handling, and ID conflict rules (upsert by `id`, preserve existing `created_at`).
+2. Transform to match `tasks` schema (`id`, `title`, `owner`, `created_at`), including timestamp normalization (UTC ISO-8601), null handling, and ID conflict rules (upsert by `id`, preserve existing `created_at`):
+
+   ```bash
+   cd backend
+   npm run data:transform -- ./tmp/base44-export.json ./tmp/tasks-import.json
+   ```
+
 3. Snapshot target PostgreSQL.
-4. Run import in staging first; validate row counts and spot-check records.
+4. Run import in staging first; validate row counts and spot-check records:
+
+   ```bash
+   cd backend
+   npm run data:import -- ./tmp/tasks-import.json
+   ```
+
 5. Repeat in production during low-traffic window.
 
 **Step 5 — Shadow traffic**

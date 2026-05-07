@@ -46,6 +46,35 @@ Backend (see `backend/.env.example` for full list):
    - `POST /api/uploads/presign` returns `uploadUrl` + `fileUrl` + `expiresInSeconds`
 6. Monitor dashboards for 30 minutes before marking deploy stable
 
+### Suggested command sequence (staging)
+
+```bash
+# frontend checks + artifact
+npm run lint && npm run typecheck && npm run build
+
+# backend checks
+cd backend
+npm run check
+
+# backend smoke/UAT (dev auth mode example)
+UAT_BASE_URL=https://staging-api.example.com \
+UAT_AUTH_MODE=dev \
+UAT_DEV_EMAIL=admin@example.com \
+UAT_ADMIN_EXPECTED_STATUS=200 \
+npm run uat:smoke
+```
+
+OIDC smoke/UAT variant:
+
+```bash
+cd backend
+UAT_BASE_URL=https://staging-api.example.com \
+UAT_AUTH_MODE=oidc \
+UAT_OIDC_PROVIDER_TOKEN=<provider-jwt> \
+UAT_ADMIN_EXPECTED_STATUS=200 \
+npm run uat:smoke
+```
+
 ## Monitoring and alerting
 
 - API latency/error-rate dashboards
