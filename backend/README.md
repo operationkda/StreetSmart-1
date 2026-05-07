@@ -11,6 +11,8 @@ background job queue.
 | POST   | `/api/auth/login`       | —             | Dev-mode email login or OIDC token verify |
 | GET    | `/api/tasks`            | ✓             | Lists tasks for the authenticated user    |
 | POST   | `/api/tasks`            | ✓             | Creates a task                            |
+| PUT    | `/api/tasks/:id`        | ✓             | Updates task title (owner-scoped)         |
+| DELETE | `/api/tasks/:id`        | ✓             | Deletes a task (owner-scoped)             |
 | GET    | `/api/admin/tasks`      | admin         | Lists tasks across all owners             |
 | POST   | `/api/uploads/presign`  | ✓             | Returns S3-compatible presigned PUT URL   |
 | POST   | `/api/webhooks/stripe`  | —             | Verifies Stripe signature and dispatches  |

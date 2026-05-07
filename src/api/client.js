@@ -68,4 +68,16 @@ export const apiClient = {
       body: JSON.stringify({ title }),
     })
   },
+  updateTask(id, title) {
+    return request(`/api/tasks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    })
+  },
+  deleteTask(id) {
+    return request(`/api/tasks/${id}`, { method: 'DELETE' })
+  },
+  listAdminTasks() {
+    return request('/api/admin/tasks')
+  },
 }
