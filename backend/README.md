@@ -6,6 +6,7 @@ Owned Node.js API service with PostgreSQL persistence, configurable auth, RBAC, 
 
 | Method | Path                    | Auth required | Notes |
 |--------|-------------------------|:-------------:|-------|
+| GET    | `/api/health`           | —             | Returns service status, DB connectivity, uptime, and version |
 | POST   | `/api/auth/login`       | —             | Dev email login or OIDC token verification |
 | GET    | `/api/briefing`         | ✓             | Returns the authenticated user's threat briefing |
 | GET    | `/api/zones`            | ✓             | Returns tactical safe and danger zones |

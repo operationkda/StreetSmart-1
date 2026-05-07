@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
@@ -46,6 +47,15 @@ const JWT_SECRET = process.env.JWT_SECRET || (IS_PRODUCTION ? '' : 'dev-secret-c
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || (IS_PRODUCTION ? '' : 'whsec_dev')
 const DB_ENABLED = Boolean(process.env.DATABASE_URL)
 const VALID_PRIORITIES = new Set(['low', 'moderate', 'high', 'critical'])
+
+let SERVICE_VERSION = '1.0.0'
+try {
+  // Read once at startup; version is constant for the lifetime of the process.
+  const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+  SERVICE_VERSION = pkg.version ?? '1.0.0'
+} catch {
+  // version unavailable in some build contexts; fall back to default
+}
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -846,6 +856,25 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') {
       send(res, 204)
+      return
+    }
+
+    if (req.url === '/api/health' && req.method === 'GET') {
+      let dbStatus = DB_ENABLED ? 'connected' : 'disabled'
+      if (DB_ENABLED) {
+        try {
+          await query('SELECT 1')
+        } catch {
+          dbStatus = 'error'
+        }
+      }
+      const healthy = dbStatus !== 'error'
+      send(res, healthy ? 200 : 503, {
+        status: healthy ? 'ok' : 'degraded',
+        db: dbStatus,
+        uptime: Math.floor(process.uptime()),
+        version: SERVICE_VERSION,
+      })
       return
     }
 

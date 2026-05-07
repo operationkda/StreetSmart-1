@@ -58,6 +58,8 @@ npm run check
 - `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/architecture.md`
 - `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/operations-runbook.md`
 - `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/migration-checklist.md`
+- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/hosting.md`
+- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/secrets.md`
 - `/home/runner/work/StreetSmart-1/StreetSmart-1/backend/README.md`
 
 ## Direction
