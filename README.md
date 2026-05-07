@@ -1,39 +1,43 @@
-**Welcome to your Base44 project** 
+# StreetSmart - Independent Live App
 
-**About**
+This repository now runs as an independent React app that talks to your own backend service.
 
-View and Edit  your app on [Base44.com](http://Base44.com) 
+## Local development
 
-This project contains everything you need to run your app locally.
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Create `.env.local`:
+   ```bash
+   VITE_API_BASE_URL=http://localhost:4000
+   ```
+3. Start frontend:
+   ```bash
+   npm run dev
+   ```
+4. Start backend scaffold in another terminal:
+   ```bash
+   cd backend
+   PORT=4000 JWT_SECRET=change-me STRIPE_WEBHOOK_SECRET=whsec_dev node ./src/server.mjs
+   ```
 
-**Edit the code in your local development environment**
+## Quality checks
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
-
-**Prerequisites:** 
-
-1. Clone the repository using the project's Git URL 
-2. Navigate to the project directory
-3. Install dependencies: `npm install`
-4. Create an `.env.local` file and set the right environment variables
-
+```bash
+npm run lint
+npm run typecheck
+npm run build
 ```
-VITE_BASE44_APP_ID=your_app_id
-VITE_BASE44_APP_BASE_URL=your_backend_url
 
-e.g.
-VITE_BASE44_APP_ID=cbef744a8545c389ef439ea6
-VITE_BASE44_APP_BASE_URL=https://my-to-do-list-81bfaad7.base44.app
-```
+## Architecture and operations docs
 
-Run the app: `npm run dev`
+- `docs/architecture.md`
+- `docs/operations-runbook.md`
+- `docs/migration-checklist.md`
+- `backend/README.md`
 
-**Publish your changes**
+## Notes
 
-Open [Base44.com](http://Base44.com) and click on Publish.
-
-**Docs & Support**
-
-Documentation: [https://docs.base44.com/Integrations/Using-GitHub](https://docs.base44.com/Integrations/Using-GitHub)
-
-Support: [https://app.base44.com/support](https://app.base44.com/support)
+- Base44 dependencies and Vite plugin were removed.
+- Frontend now uses `VITE_API_BASE_URL` and an internal API client (`src/api/client.js`).
