@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { migrate, query, closePool } from '../src/db.mjs'
 
 const mode = process.argv[2]
-const targetFile = process.argv[3] ?? './tmp/tasks-export.json'
+const targetFile = process.argv[3] ?? './tmp/intel-export.json'
 const absoluteFile = resolve(process.cwd(), targetFile)
 
 if (!process.env.DATABASE_URL) {
@@ -16,28 +16,32 @@ if (!['export', 'import'].includes(mode)) {
 
 async function exportData() {
   await migrate()
-  const tasks = (await query('SELECT id, title, owner, created_at FROM tasks ORDER BY created_at ASC')).rows
+  const intel = (
+    await query(
+      'SELECT id, title, details, priority, location, owner, created_at FROM intel_entries ORDER BY created_at ASC',
+    )
+  ).rows
   await mkdir(dirname(absoluteFile), { recursive: true })
   await writeFile(
     absoluteFile,
-    `${JSON.stringify({ exportedAt: new Date().toISOString(), tasks }, null, 2)}\n`,
+    `${JSON.stringify({ exportedAt: new Date().toISOString(), intel }, null, 2)}\n`,
     'utf8',
   )
-  console.log(JSON.stringify({ level: 'info', message: 'tasks export complete', file: absoluteFile, count: tasks.length }))
+  console.log(JSON.stringify({ level: 'info', message: 'intel export complete', file: absoluteFile, count: intel.length }))
 }
 
 async function importData() {
   await migrate()
   const raw = await readFile(absoluteFile, 'utf8')
   const payload = JSON.parse(raw)
-  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : []
+  const intel = Array.isArray(payload?.intel) ? payload.intel : []
 
-  for (const [index, task] of tasks.entries()) {
-    if (!task?.id || !task?.title || !task?.owner || !task?.created_at) {
+  for (const [index, entry] of intel.entries()) {
+    if (!entry?.id || !entry?.title || !entry?.details || !entry?.priority || !entry?.location || !entry?.owner || !entry?.created_at) {
       console.warn(
         JSON.stringify({
           level: 'warn',
-          message: 'skipping invalid task record during import',
+          message: 'skipping invalid intel record during import',
           index,
         }),
       )
@@ -45,18 +49,20 @@ async function importData() {
     }
     await query(
       `
-      INSERT INTO tasks (id, title, owner, created_at)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO intel_entries (id, title, details, priority, location, owner, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (id) DO UPDATE
-      -- Preserve original created_at for existing rows; only sync mutable fields.
       SET title = EXCLUDED.title,
+          details = EXCLUDED.details,
+          priority = EXCLUDED.priority,
+          location = EXCLUDED.location,
           owner = EXCLUDED.owner
       `,
-      [task.id, task.title, task.owner, task.created_at],
+      [entry.id, entry.title, entry.details, entry.priority, entry.location, entry.owner, entry.created_at],
     )
   }
 
-  console.log(JSON.stringify({ level: 'info', message: 'tasks import complete', file: absoluteFile, count: tasks.length }))
+  console.log(JSON.stringify({ level: 'info', message: 'intel import complete', file: absoluteFile, count: intel.length }))
 }
 
 try {

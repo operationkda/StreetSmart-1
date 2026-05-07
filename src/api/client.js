@@ -53,31 +53,43 @@ async function request(path, options = {}) {
 }
 
 export const apiClient = {
-  login(email) {
+  login(credentials) {
     return request('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(credentials),
     })
   },
-  listTasks() {
-    return request('/api/tasks')
+  getBriefing() {
+    return request('/api/briefing')
   },
-  createTask(title) {
-    return request('/api/tasks', {
+  listZones() {
+    return request('/api/zones')
+  },
+  listAdvisories() {
+    return request('/api/advisories')
+  },
+  listIntel() {
+    return request('/api/intel')
+  },
+  createIntel(payload) {
+    return request('/api/intel', {
       method: 'POST',
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(payload),
     })
   },
-  updateTask(id, title) {
-    return request(`/api/tasks/${id}`, {
+  deleteIntel(id) {
+    return request(`/api/intel/${id}`, { method: 'DELETE' })
+  },
+  getProfile() {
+    return request('/api/profile')
+  },
+  updateProfile(payload) {
+    return request('/api/profile', {
       method: 'PUT',
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(payload),
     })
   },
-  deleteTask(id) {
-    return request(`/api/tasks/${id}`, { method: 'DELETE' })
-  },
-  listAdminTasks() {
-    return request('/api/admin/tasks')
+  getAdminOverview() {
+    return request('/api/admin/overview')
   },
 }

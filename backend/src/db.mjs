@@ -19,7 +19,6 @@ export function getPool() {
     })
 
     pool.on('error', (err) => {
-      // Emit to stderr so container log drivers capture it.
       console.error(JSON.stringify({ level: 'error', message: 'pg pool error', error: err.message }))
     })
   }
@@ -43,7 +42,6 @@ export async function query(text, params) {
  * below existing ones — never remove or reorder them.
  */
 export async function migrate() {
-  // tasks table
   await query(`
     CREATE TABLE IF NOT EXISTS tasks (
       id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -53,12 +51,10 @@ export async function migrate() {
     )
   `)
 
-  // Index so per-owner list queries are fast.
   await query(`
     CREATE INDEX IF NOT EXISTS tasks_owner_idx ON tasks (owner)
   `)
 
-  // Durable audit event write-ahead store.
   await query(`
     CREATE TABLE IF NOT EXISTS audit_events (
       id            BIGSERIAL   PRIMARY KEY,
@@ -73,10 +69,41 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS audit_events_forwarded_idx
     ON audit_events (forwarded_at, created_at)
   `)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS intel_entries (
+      id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      title       TEXT        NOT NULL,
+      details     TEXT        NOT NULL,
+      priority    TEXT        NOT NULL,
+      location    TEXT        NOT NULL,
+      owner       TEXT        NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `)
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS intel_entries_owner_idx
+    ON intel_entries (owner, created_at DESC)
+  `)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      owner                     TEXT        PRIMARY KEY,
+      call_sign                 TEXT        NOT NULL,
+      home_zone_id              TEXT        NOT NULL,
+      pin_enabled               BOOLEAN     NOT NULL DEFAULT false,
+      biometric_enabled         BOOLEAN     NOT NULL DEFAULT false,
+      threat_override_enabled   BOOLEAN     NOT NULL DEFAULT false,
+      stealth_mode_enabled      BOOLEAN     NOT NULL DEFAULT false,
+      emergency_contacts        JSONB       NOT NULL DEFAULT '[]'::jsonb,
+      updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `)
 }
 
 /**
- * Gracefully drains the pool.  Call on SIGTERM/SIGINT before exiting.
+ * Gracefully drains the pool. Call on SIGTERM/SIGINT before exiting.
  */
 export async function closePool() {
   if (pool) {

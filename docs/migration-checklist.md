@@ -1,103 +1,62 @@
-# Base44 migration checklist
+# Migration checklist
 
-1. ✅ Inventory all Base44 SDK/runtime touchpoints
-2. ✅ Replace each feature with backend endpoint + frontend API client usage
-3. ✅ Verify parity in staging with user acceptance tests (procedure + automation script documented)
-4. ✅ Migrate data to owned database (script scaffold + transform/import procedure documented)
-5. ✅ Shadow traffic and compare responses/metrics (playbook documented)
-6. ✅ Cut over DNS/traffic after validation (playbook documented)
-7. ✅ Keep rollback window and playbook active until stable (playbook documented)
+## Current position
 
-## Notes on remaining steps
+- ✅ StreetSmart is aligned to the independent backend architecture in this repository.
+- ✅ The task demo has been replaced by the first StreetSmart operational slice.
+- ✅ Staging validation and migration tooling remain available for legacy data if needed.
 
-**Step 3 — UAT in staging**
-Deploy the backend and frontend to your staging environment with production-like
-env vars and services (PostgreSQL, IdP, S3-compatible bucket, Stripe webhook secret).
+## If legacy Base44 data still exists
 
-Suggested UAT execution script:
-1. Deploy commit candidate to staging.
-2. Run frontend checks: `npm run lint && npm run typecheck && npm run build`.
-3. Run backend checks: `cd backend && npm run check`.
-4. Execute automated smoke/UAT script:
-   - `cd backend && UAT_BASE_URL=https://staging-api.example.com UAT_AUTH_MODE=dev UAT_DEV_EMAIL=admin@example.com UAT_ADMIN_EXPECTED_STATUS=200 npm run uat:smoke`
-   - OIDC variant: `cd backend && UAT_BASE_URL=https://staging-api.example.com UAT_AUTH_MODE=oidc UAT_OIDC_PROVIDER_TOKEN=<provider-jwt> UAT_ADMIN_EXPECTED_STATUS=200 npm run uat:smoke`
-5. Execute Stripe replay separately:
-   - `stripe trigger payment_intent.succeeded`
-6. Confirm durable background/audit behavior:
-   - check pg-boss job execution (e.g., `send-welcome-email`)
-   - verify `audit_events` table insertions
-7. Capture latency/error metrics and sign-off before promotion.
+### Step 1 — Confirm source data scope
 
-Manual flows to spot-check (in addition to scripted smoke test):
-    - Auth login (`email` in `AUTH_MODE=dev`, or `providerToken` in `AUTH_MODE=oidc`)
-    - Task create/list (`/api/tasks`)
-    - Admin RBAC (`/api/admin/tasks`: admin=200, non-admin=403)
-    - Upload presign (`/api/uploads/presign`)
-    - Stripe webhook replay (`stripe trigger payment_intent.succeeded`)
+Inventory the legacy records that still matter for launch, especially:
 
-**Step 4 — Data migration**
-Use the scaffolded backend migration script:
+- user-linked notes or reports that should become `intel_entries`
+- contact or account metadata that should inform `profiles`
+- any files that require object-storage migration
+
+### Step 2 — Transform exports into StreetSmart formats
+
+Use the transform script to normalize Base44 exports into the import shape expected by the backend:
 
 ```bash
-cd backend
-# export from owned DB (for backup/baseline)
-npm run data:export -- ./tmp/tasks-export.json
-
-# import into owned DB (idempotent upsert by task id)
-npm run data:import -- ./tmp/tasks-export.json
+cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
+npm run data:transform -- ./tmp/base44-export.json ./tmp/intel-import.json
 ```
 
-Recommended production procedure:
-1. Export Base44 records to JSON/CSV.
-2. Transform to match `tasks` schema (`id`, `title`, `owner`, `created_at`), including timestamp normalization (UTC ISO-8601), null handling, and ID conflict rules (upsert by `id`, preserve existing `created_at`):
+The current transform targets:
 
-   ```bash
-   cd backend
-   npm run data:transform -- ./tmp/base44-export.json ./tmp/tasks-import.json
-   ```
+- `id`
+- `title`
+- `details`
+- `priority`
+- `location`
+- `owner`
+- `created_at`
 
-3. Snapshot target PostgreSQL.
-4. Run import in staging first; validate row counts and spot-check records:
+### Step 3 — Import in staging first
 
-   ```bash
-   cd backend
-   npm run data:import -- ./tmp/tasks-import.json
-   ```
+```bash
+cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
+npm run data:import -- ./tmp/intel-import.json
+npm run data:export -- ./tmp/post-import-export.json
+```
 
-5. Repeat in production during low-traffic window.
+Validate counts and spot-check owners, priorities, and timestamps.
 
-**Step 5 — Shadow traffic**
-Route a mirrored copy of production requests to the new backend alongside Base44.
+### Step 4 — Run staging UAT
 
-Recommended setup:
-- Mirror at load balancer/API gateway (header `x-shadow-request: 1`).
-- Exclude non-idempotent write endpoints if needed, or direct writes to a shadow DB.
-- Capture and compare:
-  - status code match rate
-  - response schema/body diff rate
-  - p50/p95/p99 latency deltas
-  - auth and webhook error rates
+Run the documented smoke checks after import:
 
-Run for at least 24–48 hours with no critical mismatches before cutover.
+- auth login
+- briefing retrieval
+- advisories and zones retrieval
+- intel list and intel creation
+- admin overview RBAC
+- upload presign
+- Stripe webhook replay
 
-**Step 6 — DNS / traffic cutover**
-1. Freeze schema changes and confirm successful shadow period.
-2. Update `VITE_API_BASE_URL` (or reverse-proxy upstream) to new backend.
-3. Ramp traffic progressively (10% → 50% → 100%) where possible.
-4. Monitor API errors, auth failures, queue lag, and webhook success.
-5. Keep Base44 deployment warm during the rollback window.
+### Step 5 — Production cutover only if needed
 
-**Step 7 — Rollback window**
-Keep the old Base44 environment accessible for 48 hours post-cutover.
-Rollback trigger examples:
-- sustained elevated 5xx/error budget burn
-- auth/token verification failures
-- queue processing backlog growth
-- webhook processing failures
-
-Rollback procedure:
-1. Repoint frontend/API gateway back to Base44 target.
-2. Roll back backend image and env vars if partial cutover state exists.
-3. Restore DB from pre-cutover snapshot if required.
-4. Validate login, tasks, presign, and Stripe webhook flow.
-5. Log incident timeline and corrective actions.
+If there is no legacy Base44 deployment or data to preserve, skip migration entirely and continue operating on the independent StreetSmart stack.

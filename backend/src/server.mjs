@@ -8,10 +8,6 @@ import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { migrate, query, closePool } from './db.mjs'
 import { enqueue, registerJobHandler, startQueue, stopQueue } from './queue.mjs'
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
 const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT ?? 4000)
 const TOKEN_TTL_SECONDS = Number(process.env.TOKEN_TTL_SECONDS ?? 3600)
@@ -42,13 +38,91 @@ const AUDIT_FORWARD_URL = process.env.AUDIT_FORWARD_URL ?? ''
 const AUDIT_FORWARD_BATCH_SIZE = Number(process.env.AUDIT_FORWARD_BATCH_SIZE ?? 100)
 const AUDIT_FORWARD_INTERVAL_MS = Number(process.env.AUDIT_FORWARD_INTERVAL_MS ?? 10_000)
 const AUDIT_SPOOL_FILE_PATH = process.env.AUDIT_SPOOL_FILE_PATH ?? '/tmp/streetsmart-audit-events.ndjson'
-
-// Rate-limit: requests per window per IP.
+const EMAIL_DELIVERY_MODE = process.env.EMAIL_DELIVERY_MODE ?? 'log'
+const EMAIL_WEBHOOK_URL = process.env.EMAIL_WEBHOOK_URL ?? ''
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 100)
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000)
-
 const JWT_SECRET = process.env.JWT_SECRET || (IS_PRODUCTION ? '' : 'dev-secret-change-me')
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || (IS_PRODUCTION ? '' : 'whsec_dev')
+const DB_ENABLED = Boolean(process.env.DATABASE_URL)
+const VALID_PRIORITIES = new Set(['low', 'moderate', 'high', 'critical'])
+
+const ZONES = [
+  {
+    id: 'zone-harbor-safehouse',
+    name: 'Harbor Safehouse',
+    kind: 'safe',
+    status: 'green',
+    city: 'Savannah',
+    radiusMeters: 450,
+    lat: 32.0809,
+    lng: -81.0912,
+    notes: 'Primary regroup point with vehicle access and hardened comms.',
+  },
+  {
+    id: 'zone-midtown-rally',
+    name: 'Midtown Rally Point',
+    kind: 'safe',
+    status: 'amber',
+    city: 'Savannah',
+    radiusMeters: 250,
+    lat: 32.0491,
+    lng: -81.1035,
+    notes: 'Secondary fallback if the harbor corridor is congested.',
+  },
+  {
+    id: 'zone-riverfront-watch',
+    name: 'Riverfront Watch Corridor',
+    kind: 'danger',
+    status: 'high-risk',
+    city: 'Savannah',
+    radiusMeters: 600,
+    lat: 32.0835,
+    lng: -81.0998,
+    notes: 'Recent theft pattern and increased after-hours loitering.',
+  },
+  {
+    id: 'zone-industrial-east',
+    name: 'Industrial East Buffer',
+    kind: 'danger',
+    status: 'restricted',
+    city: 'Savannah',
+    radiusMeters: 700,
+    lat: 32.0612,
+    lng: -81.0493,
+    notes: 'Avoid solo movement; maintain vehicle-only transit after dusk.',
+  },
+]
+
+const ADVISORIES = [
+  {
+    id: 'adv-curfew-window',
+    title: 'Curfew enforcement window expanded',
+    severity: 'high',
+    status: 'active',
+    issuedAt: '2026-05-07T17:45:00.000Z',
+    summary: 'Expect checkpoints and elevated patrol activity from 2100–0100 local time.',
+    action: 'Complete essential travel before 2030 and stage fallback transport.',
+  },
+  {
+    id: 'adv-network-interference',
+    title: 'Cellular interference reported downtown',
+    severity: 'medium',
+    status: 'active',
+    issuedAt: '2026-05-07T18:20:00.000Z',
+    summary: 'Intermittent LTE degradation may affect app alerts and call quality.',
+    action: 'Cache offline routes and confirm alternate comms with your primary contact.',
+  },
+  {
+    id: 'adv-harbor-open',
+    title: 'Harbor evacuation lane remains open',
+    severity: 'low',
+    status: 'monitoring',
+    issuedAt: '2026-05-07T19:05:00.000Z',
+    summary: 'Port authority cleared inbound traffic queue for light vehicles.',
+    action: 'Keep Harbor Safehouse as the preferred extraction destination.',
+  },
+]
 
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required in production')
@@ -70,14 +144,9 @@ if (IS_PRODUCTION && AUTH_MODE === 'dev') {
   throw new Error('AUTH_MODE=dev is not allowed in production')
 }
 
-// Whether a real database is available (DATABASE_URL provided).
-const DB_ENABLED = Boolean(process.env.DATABASE_URL)
-
-// In-memory fallback tasks store (used when DATABASE_URL is not configured).
-const memoryTasks = []
-
+const memoryIntelEntries = []
+const memoryProfiles = new Map()
 const jwks = AUTH_MODE === 'oidc' ? createRemoteJWKSet(new URL(AUTH_OIDC_JWKS_URI)) : null
-
 const hasS3Config = Boolean(FILE_BUCKET_NAME && FILE_BUCKET_REGION)
 const s3Client = hasS3Config
   ? new S3Client({
@@ -86,20 +155,11 @@ const s3Client = hasS3Config
     })
   : null
 
-// ---------------------------------------------------------------------------
-// Structured logging
-// ---------------------------------------------------------------------------
-
 function log(level, message, metadata = {}) {
   const entry = { timestamp: new Date().toISOString(), level, message, ...metadata }
   console[level === 'error' ? 'error' : 'log'](JSON.stringify(entry))
 }
 
-/**
- * Emits an audit log entry for security-sensitive actions.
- * @param {string} event
- * @param {Record<string, unknown>} [metadata]
- */
 async function audit(event, metadata = {}) {
   log('info', 'audit', { event, ...metadata })
 
@@ -176,15 +236,6 @@ async function flushAuditForwarder() {
   await query('UPDATE audit_events SET forwarded_at = now() WHERE id = ANY($1::bigint[])', [ids])
 }
 
-// ---------------------------------------------------------------------------
-// JWT — HS256, three-part (header.payload.signature)
-// ---------------------------------------------------------------------------
-
-/**
- * Issues a signed HS256 JWT.
- * @param {string} subject  User identifier (e.g. email).
- * @param {'user' | 'admin'} [role]
- */
 function issueToken(subject, role = 'user') {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
   const nowMs = Date.now()
@@ -200,11 +251,6 @@ function issueToken(subject, role = 'user') {
   return `${signingInput}.${signature}`
 }
 
-/**
- * Verifies a Bearer token and returns the decoded payload, or null on failure.
- * @param {string | undefined} authHeader
- * @returns {{ sub: string; role: 'user' | 'admin'; exp: number; iat: number } | null}
- */
 function verifyToken(authHeader) {
   if (!authHeader?.startsWith('Bearer ')) return null
 
@@ -231,27 +277,12 @@ function verifyToken(authHeader) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// RBAC
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true when the auth payload is present and includes one of the
- * required roles. Passing no roles means "authenticated only".
- * @param {{ role: string } | null} auth
- * @param {...string} roles
- */
 function hasRole(auth, ...roles) {
   if (!auth) return false
   if (roles.length === 0) return true
   return roles.includes(auth.role)
 }
 
-// ---------------------------------------------------------------------------
-// Rate limiting — in-memory sliding window per IP
-// ---------------------------------------------------------------------------
-
-/** @type {Map<string, number[]>} */
 const rateLimitWindows = new Map()
 
 function isRateLimited(ip) {
@@ -269,7 +300,6 @@ function isRateLimited(ip) {
   return false
 }
 
-// Periodically evict stale rate-limit buckets to cap memory usage.
 setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS
   for (const [ip, timestamps] of rateLimitWindows) {
@@ -282,20 +312,6 @@ setInterval(() => {
   }
 }, RATE_LIMIT_WINDOW_MS)
 
-// ---------------------------------------------------------------------------
-// Request validation
-// ---------------------------------------------------------------------------
-
-/**
- * @typedef {{ required?: boolean; type?: 'string' | 'number' | 'boolean'; maxLength?: number }} FieldRule
- */
-
-/**
- * Validates a parsed request body against a simple schema.
- * Returns an array of human-readable error strings (empty = valid).
- * @param {Record<string, unknown>} body
- * @param {Record<string, FieldRule>} schema
- */
 function validateBody(body, schema) {
   const errors = []
   for (const [field, rules] of Object.entries(schema)) {
@@ -319,10 +335,6 @@ function validateBody(body, schema) {
   return errors
 }
 
-// ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
-
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for']
   if (typeof forwarded === 'string') return forwarded.split(',')[0].trim()
@@ -339,13 +351,6 @@ function send(res, statusCode, payload) {
   res.end(payload !== undefined ? JSON.stringify(payload) : '')
 }
 
-/**
- * Fire-and-forget wrapper for async side effects.
- * Logs failures without interrupting the request-response cycle.
- * @param {Promise<unknown>} task
- * @param {string} taskName
- * @param {string} requestId
- */
 function runAsyncTask(task, taskName, requestId) {
   task.catch((error) => {
     log('error', `${taskName} failed`, {
@@ -374,10 +379,6 @@ async function parseBody(req) {
     throw new Error('Invalid JSON body')
   }
 }
-
-// ---------------------------------------------------------------------------
-// Stripe signature verification
-// ---------------------------------------------------------------------------
 
 function parseStripeSignatureHeader(signatureHeader) {
   const items = signatureHeader.split(',').map((item) => item.trim())
@@ -417,10 +418,6 @@ function verifyStripeSignature(rawBody, signatureHeader) {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-// ---------------------------------------------------------------------------
-// File name sanitisation
-// ---------------------------------------------------------------------------
-
 function sanitizeFileName(fileName) {
   const raw = String(fileName ?? '').trim()
   const extensionMatch = raw.match(/\.([a-zA-Z0-9]{1,8})$/)
@@ -457,80 +454,379 @@ async function createPresignedUpload(fileName, contentType) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Task persistence helpers (DB-backed when DATABASE_URL is set, else memory)
-// ---------------------------------------------------------------------------
+function normalizePriority(priority) {
+  const normalized = String(priority ?? '').trim().toLowerCase()
+  return VALID_PRIORITIES.has(normalized) ? normalized : 'moderate'
+}
 
-async function dbListTasks(owner) {
+function sanitizeIntelEntry(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    details: row.details,
+    priority: normalizePriority(row.priority),
+    location: row.location,
+    owner: row.owner,
+    created_at: row.created_at,
+  }
+}
+
+function buildDefaultProfile(owner) {
+  const callSignSource = owner.includes('@') ? owner.split('@')[0] : owner
+  return {
+    owner,
+    call_sign: callSignSource.replace(/[^a-zA-Z0-9]/g, ' ').trim().toUpperCase() || 'OPERATOR',
+    home_zone_id: 'zone-harbor-safehouse',
+    pin_enabled: false,
+    biometric_enabled: false,
+    threat_override_enabled: false,
+    stealth_mode_enabled: false,
+    emergency_contacts: [
+      {
+        name: 'Primary contact',
+        phone: '+1-555-0101',
+        relationship: 'trusted ally',
+      },
+    ],
+    updated_at: new Date().toISOString(),
+  }
+}
+
+function sanitizeProfileRow(row) {
+  return {
+    owner: row.owner,
+    call_sign: row.call_sign,
+    home_zone_id: row.home_zone_id,
+    pin_enabled: Boolean(row.pin_enabled),
+    biometric_enabled: Boolean(row.biometric_enabled),
+    threat_override_enabled: Boolean(row.threat_override_enabled),
+    stealth_mode_enabled: Boolean(row.stealth_mode_enabled),
+    emergency_contacts: Array.isArray(row.emergency_contacts) ? row.emergency_contacts : [],
+    updated_at: row.updated_at,
+  }
+}
+
+function normalizeEmergencyContacts(value) {
+  if (!Array.isArray(value)) {
+    throw new Error('emergencyContacts must be an array')
+  }
+
+  if (value.length > 5) {
+    throw new Error('emergencyContacts must contain at most 5 contacts')
+  }
+
+  return value.map((contact, index) => {
+    if (!contact || typeof contact !== 'object' || Array.isArray(contact)) {
+      throw new Error(`emergencyContacts[${index}] must be an object`)
+    }
+
+    const name = String(contact.name ?? '').trim()
+    const phone = String(contact.phone ?? '').trim()
+    const relationship = String(contact.relationship ?? '').trim()
+
+    if (!name) {
+      throw new Error(`emergencyContacts[${index}].name is required`)
+    }
+
+    if (!phone) {
+      throw new Error(`emergencyContacts[${index}].phone is required`)
+    }
+
+    if (name.length > 120 || phone.length > 120 || relationship.length > 120) {
+      throw new Error(`emergencyContacts[${index}] fields must be at most 120 characters`)
+    }
+
+    return {
+      name,
+      phone,
+      relationship,
+    }
+  })
+}
+
+function normalizeProfileUpdate(body) {
+  const errors = validateBody(body, {
+    callSign: { required: true, type: 'string', maxLength: 80 },
+    homeZoneId: { required: true, type: 'string', maxLength: 80 },
+    pinEnabled: { required: true, type: 'boolean' },
+    biometricEnabled: { required: true, type: 'boolean' },
+    threatOverrideEnabled: { required: true, type: 'boolean' },
+    stealthModeEnabled: { required: true, type: 'boolean' },
+  })
+
+  if (errors.length) {
+    throw new Error(errors[0])
+  }
+
+  const zoneExists = ZONES.some((zone) => zone.id === body.homeZoneId)
+  if (!zoneExists) {
+    throw new Error('homeZoneId must reference a known zone')
+  }
+
+  return {
+    call_sign: String(body.callSign).trim(),
+    home_zone_id: String(body.homeZoneId).trim(),
+    pin_enabled: Boolean(body.pinEnabled),
+    biometric_enabled: Boolean(body.biometricEnabled),
+    threat_override_enabled: Boolean(body.threatOverrideEnabled),
+    stealth_mode_enabled: Boolean(body.stealthModeEnabled),
+    emergency_contacts: normalizeEmergencyContacts(body.emergencyContacts ?? []),
+  }
+}
+
+async function dbListIntelEntries(owner) {
   if (DB_ENABLED) {
     const result = await query(
-      'SELECT id, title, owner, created_at FROM tasks WHERE owner = $1 ORDER BY created_at DESC',
+      `
+      SELECT id, title, details, priority, location, owner, created_at
+      FROM intel_entries
+      WHERE owner = $1
+      ORDER BY created_at DESC
+      `,
       [owner],
     )
-    return result.rows
+    return result.rows.map(sanitizeIntelEntry)
   }
-  return memoryTasks.filter((t) => t.owner === owner)
+
+  return memoryIntelEntries.filter((entry) => entry.owner === owner)
 }
 
-async function dbCreateTask(title, owner) {
+async function dbCreateIntelEntry({ title, details, priority, location }, owner) {
   if (DB_ENABLED) {
     const result = await query(
-      'INSERT INTO tasks (title, owner) VALUES ($1, $2) RETURNING id, title, owner, created_at',
-      [title, owner],
+      `
+      INSERT INTO intel_entries (title, details, priority, location, owner)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, title, details, priority, location, owner, created_at
+      `,
+      [title, details, priority, location, owner],
     )
-    return result.rows[0]
+    return sanitizeIntelEntry(result.rows[0])
   }
-  const task = { id: randomUUID(), title, owner, created_at: new Date().toISOString() }
-  memoryTasks.unshift(task)
-  return task
+
+  const intel = {
+    id: randomUUID(),
+    title,
+    details,
+    priority,
+    location,
+    owner,
+    created_at: new Date().toISOString(),
+  }
+  memoryIntelEntries.unshift(intel)
+  return intel
 }
 
-async function dbUpdateTask(id, title, owner) {
+async function dbDeleteIntelEntry(id, owner) {
   if (DB_ENABLED) {
-    const result = await query(
-      'UPDATE tasks SET title = $1 WHERE id = $2 AND owner = $3 RETURNING id, title, owner, created_at',
-      [title, id, owner],
-    )
-    return result.rows[0] ?? null
-  }
-  const task = memoryTasks.find((t) => t.id === id && t.owner === owner)
-  if (!task) return null
-  task.title = title
-  return { ...task }
-}
-
-async function dbDeleteTask(id, owner) {
-  if (DB_ENABLED) {
-    const result = await query('DELETE FROM tasks WHERE id = $1 AND owner = $2 RETURNING id', [id, owner])
+    const result = await query('DELETE FROM intel_entries WHERE id = $1 AND owner = $2 RETURNING id', [id, owner])
     return result.rowCount > 0
   }
-  const index = memoryTasks.findIndex((t) => t.id === id && t.owner === owner)
+
+  const index = memoryIntelEntries.findIndex((entry) => entry.id === id && entry.owner === owner)
   if (index === -1) return false
-  memoryTasks.splice(index, 1)
+  memoryIntelEntries.splice(index, 1)
   return true
 }
 
-async function dbListAllTasks() {
+async function dbListAllIntelEntries(limit = 12) {
   if (DB_ENABLED) {
-    const result = await query('SELECT id, title, owner, created_at FROM tasks ORDER BY created_at DESC')
-    return result.rows
+    const result = await query(
+      `
+      SELECT id, title, details, priority, location, owner, created_at
+      FROM intel_entries
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit],
+    )
+    return result.rows.map(sanitizeIntelEntry)
   }
-  return [...memoryTasks]
+
+  return [...memoryIntelEntries].slice(0, limit)
 }
 
-// ---------------------------------------------------------------------------
-// Background job handlers
-// ---------------------------------------------------------------------------
+async function dbGetIntelStats() {
+  if (DB_ENABLED) {
+    const result = await query(
+      `
+      SELECT
+        COUNT(*)::int AS total_reports,
+        COUNT(*) FILTER (WHERE priority IN ('high', 'critical'))::int AS urgent_reports
+      FROM intel_entries
+      `,
+    )
+    return result.rows[0] ?? { total_reports: 0, urgent_reports: 0 }
+  }
 
-registerJobHandler('send-welcome-email', async (data) => {
-  // TODO: integrate with your email provider (SendGrid, Resend, etc.)
-  log('info', 'send-welcome-email job executed', { sub: data?.sub })
+  return {
+    total_reports: memoryIntelEntries.length,
+    urgent_reports: memoryIntelEntries.filter((entry) => ['high', 'critical'].includes(entry.priority)).length,
+  }
+}
+
+async function dbGetProfile(owner) {
+  if (DB_ENABLED) {
+    const result = await query(
+      `
+      INSERT INTO profiles (owner, call_sign, home_zone_id, emergency_contacts)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT (owner) DO NOTHING
+      RETURNING owner, call_sign, home_zone_id, pin_enabled, biometric_enabled,
+                threat_override_enabled, stealth_mode_enabled, emergency_contacts, updated_at
+      `,
+      [
+        owner,
+        buildDefaultProfile(owner).call_sign,
+        buildDefaultProfile(owner).home_zone_id,
+        JSON.stringify(buildDefaultProfile(owner).emergency_contacts),
+      ],
+    )
+
+    if (result.rows[0]) {
+      return sanitizeProfileRow(result.rows[0])
+    }
+
+    const existing = await query(
+      `
+      SELECT owner, call_sign, home_zone_id, pin_enabled, biometric_enabled,
+             threat_override_enabled, stealth_mode_enabled, emergency_contacts, updated_at
+      FROM profiles
+      WHERE owner = $1
+      `,
+      [owner],
+    )
+    return sanitizeProfileRow(existing.rows[0])
+  }
+
+  if (!memoryProfiles.has(owner)) {
+    memoryProfiles.set(owner, buildDefaultProfile(owner))
+  }
+  return memoryProfiles.get(owner)
+}
+
+async function dbUpsertProfile(owner, profile) {
+  if (DB_ENABLED) {
+    const result = await query(
+      `
+      INSERT INTO profiles (
+        owner, call_sign, home_zone_id, pin_enabled, biometric_enabled,
+        threat_override_enabled, stealth_mode_enabled, emergency_contacts, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, now())
+      ON CONFLICT (owner) DO UPDATE
+      SET call_sign = EXCLUDED.call_sign,
+          home_zone_id = EXCLUDED.home_zone_id,
+          pin_enabled = EXCLUDED.pin_enabled,
+          biometric_enabled = EXCLUDED.biometric_enabled,
+          threat_override_enabled = EXCLUDED.threat_override_enabled,
+          stealth_mode_enabled = EXCLUDED.stealth_mode_enabled,
+          emergency_contacts = EXCLUDED.emergency_contacts,
+          updated_at = now()
+      RETURNING owner, call_sign, home_zone_id, pin_enabled, biometric_enabled,
+                threat_override_enabled, stealth_mode_enabled, emergency_contacts, updated_at
+      `,
+      [
+        owner,
+        profile.call_sign,
+        profile.home_zone_id,
+        profile.pin_enabled,
+        profile.biometric_enabled,
+        profile.threat_override_enabled,
+        profile.stealth_mode_enabled,
+        JSON.stringify(profile.emergency_contacts),
+      ],
+    )
+    return sanitizeProfileRow(result.rows[0])
+  }
+
+  const updated = {
+    owner,
+    ...profile,
+    updated_at: new Date().toISOString(),
+  }
+  memoryProfiles.set(owner, updated)
+  return updated
+}
+
+async function buildBriefing(sub) {
+  const profile = await dbGetProfile(sub)
+  const intelEntries = await dbListIntelEntries(sub)
+  const urgentIntelCount = intelEntries.filter((entry) => ['high', 'critical'].includes(entry.priority)).length
+  const activeAdvisories = ADVISORIES.filter((advisory) => advisory.status !== 'resolved')
+  const safeZones = ZONES.filter((zone) => zone.kind === 'safe')
+  const dangerZones = ZONES.filter((zone) => zone.kind === 'danger')
+  const homeZone = ZONES.find((zone) => zone.id === profile.home_zone_id) ?? safeZones[0] ?? null
+
+  return {
+    threatLevel: urgentIntelCount > 0 || activeAdvisories.some((item) => item.severity === 'high') ? 'elevated' : 'guarded',
+    headline: 'Operational picture refreshed for the next movement window.',
+    summary:
+      urgentIntelCount > 0
+        ? 'You have urgent intel entries on file. Coordinate movement through safe corridors only.'
+        : 'No urgent field reports in your personal log. Continue monitoring advisories and movement corridors.',
+    nextCheckInAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    safeZoneCount: safeZones.length,
+    dangerZoneCount: dangerZones.length,
+    activeAdvisoryCount: activeAdvisories.length,
+    intelReportCount: intelEntries.length,
+    urgentIntelCount,
+    homeZone,
+    securityPosture: {
+      callSign: profile.call_sign,
+      pinEnabled: profile.pin_enabled,
+      biometricEnabled: profile.biometric_enabled,
+      threatOverrideEnabled: profile.threat_override_enabled,
+      stealthModeEnabled: profile.stealth_mode_enabled,
+      emergencyContactCount: profile.emergency_contacts.length,
+    },
+  }
+}
+
+async function deliverSecurityBriefing(data) {
+  const payload = {
+    type: 'security-briefing',
+    sub: data?.sub,
+    role: data?.role,
+    dispatchedAt: new Date().toISOString(),
+  }
+
+  if (EMAIL_DELIVERY_MODE === 'webhook') {
+    if (!EMAIL_WEBHOOK_URL) {
+      throw new Error('EMAIL_WEBHOOK_URL is required when EMAIL_DELIVERY_MODE=webhook')
+    }
+
+    const response = await fetch(EMAIL_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+
+    if (!response.ok) {
+      throw new Error(`briefing delivery failed with ${response.status}`)
+    }
+
+    log('info', 'security briefing delivered', { sub: data?.sub, delivery: 'webhook' })
+    return
+  }
+
+  log('info', 'security briefing queued in log mode', payload)
+}
+
+registerJobHandler('dispatch-security-briefing', async (data) => {
+  await deliverSecurityBriefing(data)
 })
-let auditForwarderInterval = null
 
-// ---------------------------------------------------------------------------
-// HTTP server
-// ---------------------------------------------------------------------------
+function parseStripeEvent(rawBody) {
+  try {
+    const event = JSON.parse(rawBody.toString('utf8'))
+    return typeof event === 'object' && event ? event : null
+  } catch {
+    return null
+  }
+}
+
+let auditForwarderInterval = null
 
 const server = createServer(async (req, res) => {
   const requestId = randomUUID()
@@ -542,16 +838,12 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // Apply rate limiting to every non-OPTIONS request.
     if (isRateLimited(clientIp)) {
       log('warn', 'rate limit exceeded', { requestId, ip: clientIp, path: req.url })
       send(res, 429, { error: 'too many requests' })
       return
     }
 
-    // -----------------------------------------------------------------------
-    // POST /api/auth/login
-    // -----------------------------------------------------------------------
     if (req.method === 'POST' && req.url === '/api/auth/login') {
       const body = await parseBody(req)
       let sub = ''
@@ -582,36 +874,56 @@ const server = createServer(async (req, res) => {
 
       const token = issueToken(sub, role)
       void runAsyncTask(audit('login', { requestId, sub, role, ip: clientIp }), 'audit log', requestId)
-
-      // Enqueue a post-login job (e.g. update last-seen timestamp, sync session).
-      // This runs on every login. Rename or gate it behind a "new user" check when
-      // you have a users table and can detect first-time logins.
-      void runAsyncTask(enqueue('send-welcome-email', { sub, role }), 'job enqueue', requestId)
-
+      void runAsyncTask(enqueue('dispatch-security-briefing', { sub, role }), 'job enqueue', requestId)
       send(res, 200, { token })
       return
     }
 
     const auth = verifyToken(req.headers.authorization)
 
-    // -----------------------------------------------------------------------
-    // GET /api/tasks
-    // -----------------------------------------------------------------------
-    if (req.url === '/api/tasks' && req.method === 'GET') {
+    if (req.url === '/api/briefing' && req.method === 'GET') {
       if (!hasRole(auth)) {
         send(res, 401, { error: 'unauthorized' })
         return
       }
 
-      const tasks = await dbListTasks(auth.sub)
-      send(res, 200, { tasks })
+      const briefing = await buildBriefing(auth.sub)
+      send(res, 200, { briefing })
       return
     }
 
-    // -----------------------------------------------------------------------
-    // POST /api/tasks
-    // -----------------------------------------------------------------------
-    if (req.url === '/api/tasks' && req.method === 'POST') {
+    if (req.url === '/api/zones' && req.method === 'GET') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      send(res, 200, { zones: ZONES })
+      return
+    }
+
+    if (req.url === '/api/advisories' && req.method === 'GET') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      send(res, 200, { advisories: ADVISORIES })
+      return
+    }
+
+    if (req.url === '/api/intel' && req.method === 'GET') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      const intel = await dbListIntelEntries(auth.sub)
+      send(res, 200, { intel })
+      return
+    }
+
+    if (req.url === '/api/intel' && req.method === 'POST') {
       if (!hasRole(auth)) {
         send(res, 401, { error: 'unauthorized' })
         return
@@ -619,7 +931,10 @@ const server = createServer(async (req, res) => {
 
       const body = await parseBody(req)
       const errors = validateBody(body, {
-        title: { required: true, type: 'string', maxLength: 500 },
+        title: { required: true, type: 'string', maxLength: 120 },
+        details: { required: true, type: 'string', maxLength: 2000 },
+        priority: { required: true, type: 'string', maxLength: 20 },
+        location: { required: true, type: 'string', maxLength: 120 },
       })
 
       if (errors.length) {
@@ -627,81 +942,77 @@ const server = createServer(async (req, res) => {
         return
       }
 
-      const task = await dbCreateTask(body.title.trim(), auth.sub)
+      const intel = await dbCreateIntelEntry(
+        {
+          title: String(body.title).trim(),
+          details: String(body.details).trim(),
+          priority: normalizePriority(body.priority),
+          location: String(body.location).trim(),
+        },
+        auth.sub,
+      )
       void runAsyncTask(
-        audit('task.create', { requestId, sub: auth.sub, taskId: task.id }),
+        audit('intel.create', { requestId, sub: auth.sub, intelId: intel.id, priority: intel.priority }),
         'audit log',
         requestId,
       )
-      send(res, 201, { task })
+      send(res, 201, { intel })
       return
     }
 
-    // -----------------------------------------------------------------------
-    // PUT /api/tasks/:id
-    // -----------------------------------------------------------------------
-    const putTaskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/)
-    if (putTaskMatch && req.method === 'PUT') {
+    const deleteIntelMatch = req.url?.match(/^\/api\/intel\/([^/?]+)$/)
+    if (deleteIntelMatch && req.method === 'DELETE') {
       if (!hasRole(auth)) {
         send(res, 401, { error: 'unauthorized' })
         return
       }
 
-      const taskId = putTaskMatch[1]
-      const body = await parseBody(req)
-      const errors = validateBody(body, {
-        title: { required: true, type: 'string', maxLength: 500 },
-      })
-
-      if (errors.length) {
-        send(res, 400, { error: errors[0] })
-        return
-      }
-
-      const updated = await dbUpdateTask(taskId, body.title.trim(), auth.sub)
-      if (!updated) {
-        send(res, 404, { error: 'not found' })
-        return
-      }
-
-      void runAsyncTask(
-        audit('task.update', { requestId, sub: auth.sub, taskId }),
-        'audit log',
-        requestId,
-      )
-      send(res, 200, { task: updated })
-      return
-    }
-
-    // -----------------------------------------------------------------------
-    // DELETE /api/tasks/:id
-    // -----------------------------------------------------------------------
-    const deleteTaskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/)
-    if (deleteTaskMatch && req.method === 'DELETE') {
-      if (!hasRole(auth)) {
-        send(res, 401, { error: 'unauthorized' })
-        return
-      }
-
-      const taskId = deleteTaskMatch[1]
-      const deleted = await dbDeleteTask(taskId, auth.sub)
+      const intelId = deleteIntelMatch[1]
+      const deleted = await dbDeleteIntelEntry(intelId, auth.sub)
       if (!deleted) {
         send(res, 404, { error: 'not found' })
         return
       }
 
-      void runAsyncTask(
-        audit('task.delete', { requestId, sub: auth.sub, taskId }),
-        'audit log',
-        requestId,
-      )
+      void runAsyncTask(audit('intel.delete', { requestId, sub: auth.sub, intelId }), 'audit log', requestId)
       send(res, 204)
       return
     }
 
-    // -----------------------------------------------------------------------
-    // POST /api/uploads/presign
-    // -----------------------------------------------------------------------
+    if (req.url === '/api/profile' && req.method === 'GET') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      const profile = await dbGetProfile(auth.sub)
+      send(res, 200, { profile })
+      return
+    }
+
+    if (req.url === '/api/profile' && req.method === 'PUT') {
+      if (!hasRole(auth)) {
+        send(res, 401, { error: 'unauthorized' })
+        return
+      }
+
+      const body = await parseBody(req)
+      const profileUpdate = normalizeProfileUpdate(body)
+      const profile = await dbUpsertProfile(auth.sub, profileUpdate)
+      void runAsyncTask(
+        audit('profile.update', {
+          requestId,
+          sub: auth.sub,
+          homeZoneId: profile.home_zone_id,
+          stealthModeEnabled: profile.stealth_mode_enabled,
+        }),
+        'audit log',
+        requestId,
+      )
+      send(res, 200, { profile })
+      return
+    }
+
     if (req.url === '/api/uploads/presign' && req.method === 'POST') {
       if (!hasRole(auth)) {
         send(res, 401, { error: 'unauthorized' })
@@ -730,27 +1041,32 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // -----------------------------------------------------------------------
-    // GET /api/admin/tasks
-    // -----------------------------------------------------------------------
-    if (req.url === '/api/admin/tasks' && req.method === 'GET') {
+    if (req.url === '/api/admin/overview' && req.method === 'GET') {
       if (!hasRole(auth, 'admin')) {
         send(res, 403, { error: 'forbidden' })
         return
       }
-      const tasks = await dbListAllTasks()
+
+      const recentIntel = await dbListAllIntelEntries(12)
+      const intelStats = await dbGetIntelStats()
       void runAsyncTask(
-        audit('admin.tasks.list', { requestId, sub: auth.sub, count: tasks.length }),
+        audit('admin.overview.view', { requestId, sub: auth.sub, count: recentIntel.length }),
         'audit log',
         requestId,
       )
-      send(res, 200, { tasks })
+      send(res, 200, {
+        overview: {
+          totalIntelReports: Number(intelStats.total_reports ?? 0),
+          urgentIntelReports: Number(intelStats.urgent_reports ?? 0),
+          activeAdvisories: ADVISORIES.filter((advisory) => advisory.status !== 'resolved').length,
+          dangerZones: ZONES.filter((zone) => zone.kind === 'danger').length,
+          recommendedAction: 'Prioritize route reviews, urgent report triage, and after-dark movement restrictions.',
+        },
+        recentIntel,
+      })
       return
     }
 
-    // -----------------------------------------------------------------------
-    // POST /api/webhooks/stripe
-    // -----------------------------------------------------------------------
     if (req.url === '/api/webhooks/stripe' && req.method === 'POST') {
       const rawBody = await parseRawBody(req)
       const signature = req.headers['stripe-signature']
@@ -761,16 +1077,20 @@ const server = createServer(async (req, res) => {
         return
       }
 
-      // TODO: parse the Stripe event type and dispatch to appropriate handlers.
-      void runAsyncTask(audit('stripe.webhook', { requestId }), 'audit log', requestId)
-      send(res, 200, { received: true })
+      const event = parseStripeEvent(rawBody)
+      const eventType = typeof event?.type === 'string' ? event.type : 'unknown'
+      const auditEvent =
+        eventType === 'payment_intent.succeeded' ? 'stripe.payment_intent.succeeded' : 'stripe.webhook.unhandled'
+      void runAsyncTask(audit(auditEvent, { requestId, eventType }), 'audit log', requestId)
+      send(res, 200, { received: true, eventType })
       return
     }
 
     send(res, 404, { error: 'not found' })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'internal server error'
-    const statusCode = message === 'Invalid JSON body' ? 400 : 500
+    const statusCode =
+      message === 'Invalid JSON body' || /required|must be|known zone|at most/.test(message) ? 400 : 500
 
     log('error', 'request failed', {
       requestId,
@@ -784,10 +1104,6 @@ const server = createServer(async (req, res) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Graceful shutdown
-// ---------------------------------------------------------------------------
-
 async function shutdown(signal) {
   log('info', `received ${signal}, shutting down gracefully`)
   server.close(async () => {
@@ -798,7 +1114,6 @@ async function shutdown(signal) {
     process.exit(0)
   })
 
-  // Force exit after 10 s if server hasn't closed.
   setTimeout(() => {
     log('error', 'graceful shutdown timed out, forcing exit')
     process.exit(1)
@@ -808,17 +1123,13 @@ async function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
-// ---------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------
-
 async function main() {
   if (DB_ENABLED) {
     log('info', 'applying database migrations')
     await migrate()
     log('info', 'database migrations complete')
   } else {
-    log('warn', 'DATABASE_URL not set — using in-memory task storage (not suitable for production)')
+    log('warn', 'DATABASE_URL not set — using in-memory StreetSmart stores (not suitable for production)')
   }
 
   await startQueue({
@@ -839,6 +1150,7 @@ async function main() {
       port: PORT,
       environment: process.env.NODE_ENV ?? 'development',
       db: DB_ENABLED ? 'postgresql' : 'memory',
+      authMode: AUTH_MODE,
     })
   })
 }
