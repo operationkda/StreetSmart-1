@@ -57,6 +57,22 @@ export async function migrate() {
   await query(`
     CREATE INDEX IF NOT EXISTS tasks_owner_idx ON tasks (owner)
   `)
+
+  // Durable audit event write-ahead store.
+  await query(`
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id            BIGSERIAL   PRIMARY KEY,
+      event         TEXT        NOT NULL,
+      metadata      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      forwarded_at  TIMESTAMPTZ
+    )
+  `)
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS audit_events_forwarded_idx
+    ON audit_events (forwarded_at, created_at)
+  `)
 }
 
 /**

@@ -15,7 +15,7 @@ No Base44 runtime components are required.
 
 - Frontend calls only `VITE_API_BASE_URL`
 - Backend owns auth, authorization, CRUD, file upload signing, and webhooks
-- Background jobs are handled by worker processes and a queue
+- Background jobs are handled by worker processes and a durable queue (pg-boss)
 
 ## Deployment topology
 
@@ -27,6 +27,8 @@ No Base44 runtime components are required.
 ## Security baseline
 
 - HTTPS only
+- OIDC identity provider integration (Auth0/Cognito/Clerk-compatible issuer/JWKS)
 - Secret manager for JWT/signing keys
 - Rotation policy for secrets and webhook keys
 - Least-privilege service accounts
+- Durable audit trail (`audit_events`) with optional SIEM forwarding hook

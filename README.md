@@ -19,7 +19,9 @@ This repository now runs as an independent React app that talks to your own back
 4. Start backend scaffold in another terminal:
    ```bash
    cd backend
-   PORT=4000 JWT_SECRET=change-me STRIPE_WEBHOOK_SECRET=whsec_dev node ./src/server.mjs
+   cp .env.example .env
+   npm install
+   npm run dev
    ```
 
 ## Quality checks
