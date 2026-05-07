@@ -1,24 +1,25 @@
 # StreetSmart backend (independent from Base44)
 
-Owned Node.js API service with PostgreSQL persistence, HS256 JWT auth,
-RBAC, rate limiting, request validation, audit logging, and a background
-job queue.
+Owned Node.js API service with PostgreSQL persistence, configurable IdP auth,
+RBAC, rate limiting, request validation, durable audit logging, and a durable
+background job queue.
 
 ## Endpoints
 
 | Method | Path                    | Auth required | Notes                                     |
 |--------|-------------------------|:-------------:|-------------------------------------------|
-| POST   | `/api/auth/login`       | —             | Returns a signed HS256 JWT                |
+| POST   | `/api/auth/login`       | —             | Dev-mode email login or OIDC token verify |
 | GET    | `/api/tasks`            | ✓             | Lists tasks for the authenticated user    |
 | POST   | `/api/tasks`            | ✓             | Creates a task                            |
-| POST   | `/api/uploads/presign`  | ✓             | Returns a presigned upload URL (stub)     |
+| GET    | `/api/admin/tasks`      | admin         | Lists tasks across all owners             |
+| POST   | `/api/uploads/presign`  | ✓             | Returns S3-compatible presigned PUT URL   |
 | POST   | `/api/webhooks/stripe`  | —             | Verifies Stripe signature and dispatches  |
 
 ## Local development (without Docker)
 
 ```bash
-cp .env.example .env          # fill in JWT_SECRET at minimum
 cd backend
+cp .env.example .env
 npm install
 npm run dev
 ```
@@ -44,22 +45,49 @@ Required in production:
 - `JWT_SECRET` — ≥ 32 random bytes, base64-encoded
 - `STRIPE_WEBHOOK_SECRET`
 - `DATABASE_URL`
+- `AUTH_MODE=oidc`
+- `AUTH_OIDC_ISSUER`
+- `AUTH_OIDC_AUDIENCE`
 - `FILE_BUCKET_BASE_URL`
+- `FILE_BUCKET_NAME`
+- `FILE_BUCKET_REGION`
+- AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional session token)
 - `ALLOWED_ORIGIN` — restrict CORS to your frontend origin
+
+## Authentication modes
+
+- `AUTH_MODE=dev` (default in local development): `/api/auth/login` accepts `{ "email": "user@example.com" }`.
+- `AUTH_MODE=oidc` (required in production): `/api/auth/login` accepts `{ "providerToken": "<OIDC JWT>" }` and verifies issuer/audience/JWKS.
+
+`DEV_ADMIN_EMAILS` (comma-separated) grants `admin` role in dev mode for RBAC testing.
+`AUTH_OIDC_ROLE_CLAIM` selects the JWT claim used for RBAC role extraction (default: `role`, with fallback support for `https://streetsmart.io/role`).
 
 ## Background jobs
 
-`src/queue.mjs` provides a lightweight in-process job queue with retries.
+`src/queue.mjs` uses **pg-boss** for durable background jobs when `DATABASE_URL` is configured, with an in-process fallback only for local no-DB mode.
 Register handlers at startup with `registerJobHandler(name, handler)` and
 dispatch work with `enqueue(name, data)`.
+Set `PG_BOSS_SCHEMA` to isolate queue tables if needed (default: `pgboss`).
 
-For high-throughput or durable jobs, replace this module with
-**BullMQ** (Redis-backed) or **pg-boss** (PostgreSQL-backed).
+The example `send-welcome-email` job remains wired to run on login.
 
-## Next hardening steps
+## Durable audit logging
 
-- Replace email-only login with a real identity provider (Auth0, Cognito, Clerk)
-- Wire `FILE_BUCKET_BASE_URL` to a real S3-compatible bucket with AWS SDK v3 presigning
-- Add per-route RBAC enforcement using the `hasRole()` helper and an `admin` role
-- Add audit-log flushing to a write-ahead store or SIEM
-- Replace the in-process queue with BullMQ or pg-boss for durability
+Audit events are persisted to:
+- PostgreSQL `audit_events` table when `DATABASE_URL` is set (default in Docker Compose/prod),
+- append-only spool file (`AUDIT_SPOOL_FILE_PATH`) when DB is not configured.
+
+Set `AUDIT_FORWARD_URL` to enable periodic forwarding to SIEM/webhook receivers.
+
+## Manual verification checklist
+
+1. `POST /api/auth/login`:
+   - dev mode: `{ "email": "admin@example.com" }` returns token with admin role.
+   - oidc mode: `{ "providerToken": "<provider jwt>" }` returns token.
+2. `POST /api/uploads/presign` with Bearer token returns `uploadUrl`, `fileUrl`, `expiresInSeconds`.
+3. `GET /api/admin/tasks`:
+   - admin token → `200`
+   - non-admin token → `403`
+4. Trigger login and verify:
+   - pg-boss tables and job execution logs (`send-welcome-email`).
+   - `audit_events` rows insert and `forwarded_at` updates when `AUDIT_FORWARD_URL` is set.

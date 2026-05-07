@@ -42,6 +42,14 @@ services:
       DATABASE_URL: postgres://streetsmart:devpassword@postgres:5432/streetsmart
       JWT_SECRET: dev-jwt-secret-change-in-production
       STRIPE_WEBHOOK_SECRET: whsec_dev
+      AUTH_MODE: dev
+      DEV_ADMIN_EMAILS: admin@example.com
+      FILE_BUCKET_BASE_URL: https://files.local.streetsmart
+      FILE_BUCKET_NAME: streetsmart-dev
+      FILE_BUCKET_REGION: us-east-1
+      FILE_BUCKET_KEY_PREFIX: uploads
+      AWS_ACCESS_KEY_ID: local-dev-access-key
+      AWS_SECRET_ACCESS_KEY: local-dev-secret-key
       ALLOWED_ORIGIN: "*"
     depends_on:
       postgres:

@@ -1,7 +1,12 @@
 import { createServer } from 'node:http'
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { migrate, query, closePool } from './db.mjs'
-import { enqueue, registerJobHandler } from './queue.mjs'
+import { enqueue, registerJobHandler, startQueue, stopQueue } from './queue.mjs'
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -13,7 +18,30 @@ const TOKEN_TTL_SECONDS = Number(process.env.TOKEN_TTL_SECONDS ?? 3600)
 const STRIPE_WEBHOOK_TOLERANCE_SECONDS = Number(process.env.STRIPE_WEBHOOK_TOLERANCE_SECONDS ?? 300)
 const STRIPE_WEBHOOK_MAX_FUTURE_SECONDS = Number(process.env.STRIPE_WEBHOOK_MAX_FUTURE_SECONDS ?? 60)
 const FILE_BUCKET_BASE_URL = process.env.FILE_BUCKET_BASE_URL ?? 'https://example-bucket.local'
+const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME ?? ''
+const FILE_BUCKET_REGION = process.env.FILE_BUCKET_REGION ?? ''
+const FILE_BUCKET_ENDPOINT = process.env.FILE_BUCKET_ENDPOINT ?? ''
+const FILE_BUCKET_KEY_PREFIX = process.env.FILE_BUCKET_KEY_PREFIX ?? 'uploads'
+const FILE_BUCKET_PRESIGN_EXPIRES_SECONDS = Number(process.env.FILE_BUCKET_PRESIGN_EXPIRES_SECONDS ?? 300)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*'
+const VALID_AUTH_MODES = ['dev', 'oidc']
+const AUTH_MODE = process.env.AUTH_MODE ?? (IS_PRODUCTION ? 'oidc' : 'dev')
+const AUTH_OIDC_ISSUER = process.env.AUTH_OIDC_ISSUER ?? ''
+const AUTH_OIDC_AUDIENCE = process.env.AUTH_OIDC_AUDIENCE ?? ''
+const AUTH_OIDC_JWKS_URI =
+  process.env.AUTH_OIDC_JWKS_URI ?? (AUTH_OIDC_ISSUER ? `${AUTH_OIDC_ISSUER}/.well-known/jwks.json` : '')
+const AUTH_OIDC_ROLE_CLAIM = process.env.AUTH_OIDC_ROLE_CLAIM ?? 'role'
+const AUTH_OIDC_ROLE_FALLBACK_CLAIM = 'https://streetsmart.io/role'
+const DEV_ADMIN_EMAILS = new Set(
+  String(process.env.DEV_ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean),
+)
+const AUDIT_FORWARD_URL = process.env.AUDIT_FORWARD_URL ?? ''
+const AUDIT_FORWARD_BATCH_SIZE = Number(process.env.AUDIT_FORWARD_BATCH_SIZE ?? 100)
+const AUDIT_FORWARD_INTERVAL_MS = Number(process.env.AUDIT_FORWARD_INTERVAL_MS ?? 10_000)
+const AUDIT_SPOOL_FILE_PATH = process.env.AUDIT_SPOOL_FILE_PATH ?? '/tmp/streetsmart-audit-events.ndjson'
 
 // Rate-limit: requests per window per IP.
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 100)
@@ -30,11 +58,33 @@ if (!STRIPE_WEBHOOK_SECRET) {
   throw new Error('STRIPE_WEBHOOK_SECRET is required in production')
 }
 
+if (!VALID_AUTH_MODES.includes(AUTH_MODE)) {
+  throw new Error(`AUTH_MODE must be one of: ${VALID_AUTH_MODES.join(', ')}`)
+}
+
+if (AUTH_MODE === 'oidc' && (!AUTH_OIDC_ISSUER || !AUTH_OIDC_AUDIENCE)) {
+  throw new Error('AUTH_OIDC_ISSUER and AUTH_OIDC_AUDIENCE are required when AUTH_MODE=oidc')
+}
+
+if (IS_PRODUCTION && AUTH_MODE === 'dev') {
+  throw new Error('AUTH_MODE=dev is not allowed in production')
+}
+
 // Whether a real database is available (DATABASE_URL provided).
 const DB_ENABLED = Boolean(process.env.DATABASE_URL)
 
 // In-memory fallback tasks store (used when DATABASE_URL is not configured).
 const memoryTasks = []
+
+const jwks = AUTH_MODE === 'oidc' ? createRemoteJWKSet(new URL(AUTH_OIDC_JWKS_URI)) : null
+
+const hasS3Config = Boolean(FILE_BUCKET_NAME && FILE_BUCKET_REGION)
+const s3Client = hasS3Config
+  ? new S3Client({
+      region: FILE_BUCKET_REGION,
+      ...(FILE_BUCKET_ENDPOINT ? { endpoint: FILE_BUCKET_ENDPOINT, forcePathStyle: true } : {}),
+    })
+  : null
 
 // ---------------------------------------------------------------------------
 // Structured logging
@@ -50,8 +100,80 @@ function log(level, message, metadata = {}) {
  * @param {string} event
  * @param {Record<string, unknown>} [metadata]
  */
-function audit(event, metadata = {}) {
+async function audit(event, metadata = {}) {
   log('info', 'audit', { event, ...metadata })
+
+  if (DB_ENABLED) {
+    await query('INSERT INTO audit_events (event, metadata) VALUES ($1, $2::jsonb)', [
+      event,
+      JSON.stringify(metadata),
+    ])
+    return
+  }
+
+  const entry = { event, metadata, createdAt: new Date().toISOString() }
+  await mkdir(dirname(AUDIT_SPOOL_FILE_PATH), { recursive: true })
+  await appendFile(AUDIT_SPOOL_FILE_PATH, `${JSON.stringify(entry)}\n`, 'utf8')
+}
+
+function getRoleFromClaims(claims) {
+  const value = claims[AUTH_OIDC_ROLE_CLAIM] ?? claims.role ?? claims[AUTH_OIDC_ROLE_FALLBACK_CLAIM]
+  if (typeof value === 'string') return value === 'admin' ? 'admin' : 'user'
+  if (Array.isArray(value) && value.includes('admin')) return 'admin'
+  return 'user'
+}
+
+async function verifyOidcToken(token) {
+  if (!jwks) throw new Error('OIDC not configured')
+
+  const { payload } = await jwtVerify(token, jwks, {
+    issuer: AUTH_OIDC_ISSUER,
+    audience: AUTH_OIDC_AUDIENCE,
+  })
+
+  if (!payload.sub || typeof payload.sub !== 'string') {
+    throw new Error('provider token missing subject')
+  }
+
+  return { sub: payload.sub, role: getRoleFromClaims(payload) }
+}
+
+async function flushAuditForwarder() {
+  if (!DB_ENABLED || !AUDIT_FORWARD_URL) return
+
+  const result = await query(
+    `
+    SELECT id, event, metadata, created_at
+    FROM audit_events
+    WHERE forwarded_at IS NULL
+    ORDER BY id ASC
+    LIMIT $1
+    `,
+    [AUDIT_FORWARD_BATCH_SIZE],
+  )
+
+  if (!result.rows.length) return
+
+  const response = await fetch(AUDIT_FORWARD_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: 'streetsmart-backend',
+      events: result.rows.map((row) => ({
+        id: row.id,
+        event: row.event,
+        metadata: row.metadata,
+        createdAt: row.created_at,
+      })),
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`audit forwarder request failed with ${response.status}`)
+  }
+
+  const ids = result.rows.map((row) => row.id)
+  await query('UPDATE audit_events SET forwarded_at = now() WHERE id = ANY($1::bigint[])', [ids])
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +203,7 @@ function issueToken(subject, role = 'user') {
 /**
  * Verifies a Bearer token and returns the decoded payload, or null on failure.
  * @param {string | undefined} authHeader
- * @returns {{ sub: string; role: string; exp: number; iat: number } | null}
+ * @returns {{ sub: string; role: 'user' | 'admin'; exp: number; iat: number } | null}
  */
 function verifyToken(authHeader) {
   if (!authHeader?.startsWith('Bearer ')) return null
@@ -101,7 +223,9 @@ function verifyToken(authHeader) {
   try {
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
     if (typeof decoded.exp !== 'number' || Date.now() >= decoded.exp * 1000) return null
-    return decoded
+    if (typeof decoded.sub !== 'string' || !decoded.sub) return null
+    const role = decoded.role === 'admin' ? 'admin' : 'user'
+    return { sub: decoded.sub, exp: decoded.exp, iat: Number(decoded.iat ?? 0), role }
   } catch {
     return null
   }
@@ -215,6 +339,23 @@ function send(res, statusCode, payload) {
   res.end(payload !== undefined ? JSON.stringify(payload) : '')
 }
 
+/**
+ * Fire-and-forget wrapper for async side effects.
+ * Logs failures without interrupting the request-response cycle.
+ * @param {Promise<unknown>} task
+ * @param {string} taskName
+ * @param {string} requestId
+ */
+function runAsyncTask(task, taskName, requestId) {
+  task.catch((error) => {
+    log('error', `${taskName} failed`, {
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  })
+  return task
+}
+
 function parseRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
@@ -290,6 +431,32 @@ function sanitizeFileName(fileName) {
   return `${normalizedBaseName.slice(0, 96)}${extension}`
 }
 
+async function createPresignedUpload(fileName, contentType) {
+  if (!s3Client) {
+    throw new Error('S3 presigning is not configured (set FILE_BUCKET_NAME and FILE_BUCKET_REGION)')
+  }
+
+  const keyPrefix = FILE_BUCKET_KEY_PREFIX.replace(/^\/+|\/+$/g, '')
+  const key = keyPrefix ? `${keyPrefix}/${fileName}` : fileName
+  const command = new PutObjectCommand({
+    Bucket: FILE_BUCKET_NAME,
+    Key: key,
+    ...(typeof contentType === 'string' && contentType.trim()
+      ? { ContentType: contentType.trim() }
+      : {}),
+  })
+
+  const uploadUrl = await getSignedUrl(s3Client, command, {
+    expiresIn: FILE_BUCKET_PRESIGN_EXPIRES_SECONDS,
+  })
+
+  return {
+    uploadUrl,
+    fileUrl: `${FILE_BUCKET_BASE_URL.replace(/\/$/, '')}/${key}`,
+    expiresInSeconds: FILE_BUCKET_PRESIGN_EXPIRES_SECONDS,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Task persistence helpers (DB-backed when DATABASE_URL is set, else memory)
 // ---------------------------------------------------------------------------
@@ -318,6 +485,14 @@ async function dbCreateTask(title, owner) {
   return task
 }
 
+async function dbListAllTasks() {
+  if (DB_ENABLED) {
+    const result = await query('SELECT id, title, owner, created_at FROM tasks ORDER BY created_at DESC')
+    return result.rows
+  }
+  return [...memoryTasks]
+}
+
 // ---------------------------------------------------------------------------
 // Background job handlers
 // ---------------------------------------------------------------------------
@@ -326,6 +501,7 @@ registerJobHandler('send-welcome-email', async (data) => {
   // TODO: integrate with your email provider (SendGrid, Resend, etc.)
   log('info', 'send-welcome-email job executed', { sub: data?.sub })
 })
+let auditForwarderInterval = null
 
 // ---------------------------------------------------------------------------
 // HTTP server
@@ -353,22 +529,39 @@ const server = createServer(async (req, res) => {
     // -----------------------------------------------------------------------
     if (req.method === 'POST' && req.url === '/api/auth/login') {
       const body = await parseBody(req)
-      const errors = validateBody(body, {
-        email: { required: true, type: 'string', maxLength: 254 },
-      })
+      let sub = ''
+      let role = 'user'
 
-      if (errors.length) {
-        send(res, 400, { error: errors[0] })
-        return
+      if (AUTH_MODE === 'dev') {
+        const errors = validateBody(body, {
+          email: { required: true, type: 'string', maxLength: 254 },
+        })
+        if (errors.length) {
+          send(res, 400, { error: errors[0] })
+          return
+        }
+        sub = String(body.email).trim().toLowerCase()
+        role = DEV_ADMIN_EMAILS.has(sub) ? 'admin' : 'user'
+      } else {
+        const errors = validateBody(body, {
+          providerToken: { required: true, type: 'string', maxLength: 8192 },
+        })
+        if (errors.length) {
+          send(res, 400, { error: errors[0] })
+          return
+        }
+        const verified = await verifyOidcToken(String(body.providerToken))
+        sub = verified.sub
+        role = verified.role
       }
 
-      const token = issueToken(body.email, 'user')
-      audit('login', { requestId, sub: body.email, ip: clientIp })
+      const token = issueToken(sub, role)
+      void runAsyncTask(audit('login', { requestId, sub, role, ip: clientIp }), 'audit log', requestId)
 
       // Enqueue a post-login job (e.g. update last-seen timestamp, sync session).
       // This runs on every login. Rename or gate it behind a "new user" check when
       // you have a users table and can detect first-time logins.
-      enqueue('send-welcome-email', { sub: body.email })
+      void runAsyncTask(enqueue('send-welcome-email', { sub, role }), 'job enqueue', requestId)
 
       send(res, 200, { token })
       return
@@ -410,7 +603,11 @@ const server = createServer(async (req, res) => {
       }
 
       const task = await dbCreateTask(body.title.trim(), auth.sub)
-      audit('task.create', { requestId, sub: auth.sub, taskId: task.id })
+      void runAsyncTask(
+        audit('task.create', { requestId, sub: auth.sub, taskId: task.id }),
+        'audit log',
+        requestId,
+      )
       send(res, 201, { task })
       return
     }
@@ -427,6 +624,7 @@ const server = createServer(async (req, res) => {
       const body = await parseBody(req)
       const errors = validateBody(body, {
         fileName: { required: true, type: 'string', maxLength: 255 },
+        contentType: { required: false, type: 'string', maxLength: 255 },
       })
 
       if (errors.length) {
@@ -435,12 +633,31 @@ const server = createServer(async (req, res) => {
       }
 
       const fileName = sanitizeFileName(body.fileName)
-      audit('upload.presign', { requestId, sub: auth.sub, fileName })
-      send(res, 200, {
-        uploadUrl: `${FILE_BUCKET_BASE_URL}/upload/${fileName}`,
-        fileUrl: `${FILE_BUCKET_BASE_URL}/files/${fileName}`,
-        expiresInSeconds: 300,
-      })
+      const presigned = await createPresignedUpload(fileName, body.contentType)
+      void runAsyncTask(
+        audit('upload.presign', { requestId, sub: auth.sub, fileName }),
+        'audit log',
+        requestId,
+      )
+      send(res, 200, presigned)
+      return
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /api/admin/tasks
+    // -----------------------------------------------------------------------
+    if (req.url === '/api/admin/tasks' && req.method === 'GET') {
+      if (!hasRole(auth, 'admin')) {
+        send(res, 403, { error: 'forbidden' })
+        return
+      }
+      const tasks = await dbListAllTasks()
+      void runAsyncTask(
+        audit('admin.tasks.list', { requestId, sub: auth.sub, count: tasks.length }),
+        'audit log',
+        requestId,
+      )
+      send(res, 200, { tasks })
       return
     }
 
@@ -458,7 +675,7 @@ const server = createServer(async (req, res) => {
       }
 
       // TODO: parse the Stripe event type and dispatch to appropriate handlers.
-      audit('stripe.webhook', { requestId })
+      void runAsyncTask(audit('stripe.webhook', { requestId }), 'audit log', requestId)
       send(res, 200, { received: true })
       return
     }
@@ -487,6 +704,8 @@ const server = createServer(async (req, res) => {
 async function shutdown(signal) {
   log('info', `received ${signal}, shutting down gracefully`)
   server.close(async () => {
+    if (auditForwarderInterval) clearInterval(auditForwarderInterval)
+    await stopQueue()
     await closePool()
     log('info', 'shutdown complete')
     process.exit(0)
@@ -514,6 +733,19 @@ async function main() {
   } else {
     log('warn', 'DATABASE_URL not set — using in-memory task storage (not suitable for production)')
   }
+
+  await startQueue({
+    logger: (entry) => log(entry.level ?? 'info', entry.message ?? 'queue event', entry),
+  })
+
+  auditForwarderInterval = setInterval(() => {
+    void flushAuditForwarder().catch((error) => {
+      log('error', 'audit flush failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }, AUDIT_FORWARD_INTERVAL_MS)
+  auditForwarderInterval.unref()
 
   server.listen(PORT, () => {
     log('info', 'StreetSmart backend listening', {
