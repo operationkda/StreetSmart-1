@@ -25,7 +25,7 @@ _and_ as GitHub environment secrets for the deploy workflow.
 | Variable | Required | Description |
 |---|---|---|
 | `DATABASE_URL` | ✅ | PostgreSQL connection string (`postgres://user:pass@host:5432/db`) |
-| `JWT_SECRET` | ✅ | At least 32 bytes of cryptographically random data. Rotate periodically. |
+| `JWT_SECRET` | ✅ | Cryptographically random bytes (see generation commands below). Rotate periodically. |
 | `STRIPE_WEBHOOK_SECRET` | ✅ | Signing secret from the Stripe dashboard (Developers → Webhooks). |
 | `AUTH_OIDC_ISSUER` | ✅ in prod | OIDC provider issuer URL (e.g. `https://tenant.auth0.com/`). Include trailing slash. |
 | `AUTH_OIDC_AUDIENCE` | ✅ in prod | OIDC audience value registered with the provider. |

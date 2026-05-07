@@ -37,7 +37,7 @@ flyctl postgres attach --app streetsmart-backend streetsmart-db
 
 # Set required secrets (see docs/secrets.md for the full list)
 flyctl secrets set --app streetsmart-backend \
-  JWT_SECRET=<generate-32+-random-bytes> \
+  JWT_SECRET=<output-of-secret-generation-command> \
   STRIPE_WEBHOOK_SECRET=<from-stripe-dashboard> \
   AUTH_MODE=oidc \
   AUTH_OIDC_ISSUER=https://<your-auth0-tenant>.auth0.com/ \

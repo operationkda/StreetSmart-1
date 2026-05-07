@@ -50,6 +50,7 @@ const VALID_PRIORITIES = new Set(['low', 'moderate', 'high', 'critical'])
 
 let SERVICE_VERSION = '1.0.0'
 try {
+  // Read once at startup; version is constant for the lifetime of the process.
   const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
   SERVICE_VERSION = pkg.version ?? '1.0.0'
 } catch {
