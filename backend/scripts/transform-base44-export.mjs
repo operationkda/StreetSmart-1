@@ -6,6 +6,10 @@ const sourceFile = process.argv[2] ?? './tmp/base44-export.json'
 const targetFile = process.argv[3] ?? './tmp/tasks-import.json'
 const sourcePath = resolve(process.cwd(), sourceFile)
 const targetPath = resolve(process.cwd(), targetFile)
+// Sentinel owner used when source records do not contain user identity fields.
+const UNKNOWN_OWNER_EMAIL = 'unknown@example.com'
+// Deterministic sentinel for missing/invalid source timestamps during migration.
+const FALLBACK_CREATED_AT = '1970-01-01T00:00:00.000Z'
 
 function asArray(payload) {
   if (Array.isArray(payload)) return payload
@@ -14,6 +18,12 @@ function asArray(payload) {
   if (Array.isArray(payload?.data)) return payload.data
   if (Array.isArray(payload?.items)) return payload.items
   return []
+}
+
+function getRawId(raw) {
+  const candidate = raw?.id ?? raw?._id ?? raw?.taskId ?? raw?.task_id
+  if (typeof candidate !== 'string') return ''
+  return candidate.trim()
 }
 
 function normalizeOwner(raw) {
@@ -25,8 +35,8 @@ function normalizeOwner(raw) {
     raw?.created_by ??
     raw?.user ??
     raw?.userId ??
-    'unknown@example.com'
-  return String(candidate).trim().toLowerCase() || 'unknown@example.com'
+    UNKNOWN_OWNER_EMAIL
+  return String(candidate).trim().toLowerCase() || UNKNOWN_OWNER_EMAIL
 }
 
 function normalizeTitle(raw) {
@@ -44,13 +54,13 @@ function normalizeCreatedAt(raw) {
     raw?.insertedAt ??
     raw?.inserted_at
   const date = new Date(String(candidate ?? ''))
-  if (Number.isNaN(date.getTime())) return new Date().toISOString()
+  if (Number.isNaN(date.getTime())) return FALLBACK_CREATED_AT
   return date.toISOString()
 }
 
 function normalizeTask(raw, index) {
-  const idCandidate = raw?.id ?? raw?._id ?? raw?.taskId ?? raw?.task_id
-  const id = typeof idCandidate === 'string' && idCandidate.trim() ? idCandidate.trim() : randomUUID()
+  const rawId = getRawId(raw)
+  const id = rawId || randomUUID()
   return {
     id,
     title: normalizeTitle(raw),
@@ -71,9 +81,11 @@ async function main() {
 
   const dedupedById = new Map()
   let generatedIds = 0
+  let fallbackTimestampCount = 0
   for (const [index, record] of sourceRecords.entries()) {
     const normalized = normalizeTask(record, index)
-    if (!record?.id && !record?._id && !record?.taskId && !record?.task_id) generatedIds += 1
+    if (!getRawId(record)) generatedIds += 1
+    if (normalized.created_at === FALLBACK_CREATED_AT) fallbackTimestampCount += 1
     if (dedupedById.has(normalized.id)) continue
     dedupedById.set(normalized.id, normalized)
   }
@@ -105,6 +117,7 @@ async function main() {
       sourceCount: sourceRecords.length,
       taskCount: tasks.length,
       generatedIds,
+      fallbackTimestampCount,
       droppedDuplicates: sourceRecords.length - tasks.length,
     }),
   )

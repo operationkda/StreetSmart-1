@@ -6,6 +6,8 @@ const DEV_EMAIL = process.env.UAT_DEV_EMAIL ?? 'admin@example.com'
 const OIDC_PROVIDER_TOKEN = process.env.UAT_OIDC_PROVIDER_TOKEN ?? ''
 const ADMIN_EXPECTED_STATUS = Number(process.env.UAT_ADMIN_EXPECTED_STATUS ?? 200)
 const REQUEST_TIMEOUT_MS = Number(process.env.UAT_TIMEOUT_MS ?? 10_000)
+// Guardrail for clearly malformed tokens while avoiding strict JWT parsing in smoke tests.
+const MIN_JWT_CHAR_THRESHOLD_FOR_HEADER_PAYLOAD = 50
 
 function assert(condition, message, metadata = {}) {
   if (condition) return
@@ -56,7 +58,10 @@ async function run() {
     body: loginResult.body,
   })
   const token = loginResult.body?.token
-  assert(typeof token === 'string' && token.length > 20, 'login did not return a valid token')
+  assert(
+    typeof token === 'string' && token.length > MIN_JWT_CHAR_THRESHOLD_FOR_HEADER_PAYLOAD,
+    'login did not return a valid token',
+  )
   console.log(JSON.stringify({ level: 'info', check: 'auth.login', status: 'ok' }))
 
   const authHeaders = {
@@ -74,7 +79,7 @@ async function run() {
   })
   console.log(JSON.stringify({ level: 'info', check: 'tasks.list.before', status: 'ok' }))
 
-  const uniqueTitle = `uat-${new Date().toISOString()}-${randomUUID().slice(0, 8)}`
+  const uniqueTitle = `uat-${Date.now()}-${randomUUID().slice(0, 8)}`
   const createResult = await request('/api/tasks', {
     method: 'POST',
     headers: authHeaders,
