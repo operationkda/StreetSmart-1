@@ -72,6 +72,19 @@ UAT_ADMIN_EXPECTED_STATUS=200 \
 npm run uat:smoke
 ```
 
+## Production cutover verification (Step 5)
+
+Use the read-focused cutover verification for production readiness checks:
+
+```bash
+cd backend
+CUTOVER_BASE_URL=https://api.example.com \
+CUTOVER_AUTH_MODE=dev \
+CUTOVER_DEV_EMAIL=admin@example.com \
+CUTOVER_ADMIN_EXPECTED_STATUS=200 \
+npm run cutover:verify
+```
+
 ## Base44 export normalization for import
 
 ```bash

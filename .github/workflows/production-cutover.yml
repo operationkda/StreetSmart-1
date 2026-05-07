@@ -1,0 +1,58 @@
+name: Production Cutover Verification (Step 5)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cutover_base_url:
+        description: "Target API base URL (e.g., https://api.example.com)"
+        required: true
+        type: string
+      auth_mode:
+        description: "Authentication mode for /api/auth/login"
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - oidc
+      admin_expected_status:
+        description: "Expected HTTP status for /api/admin/overview"
+        required: true
+        default: "200"
+        type: string
+      timeout_ms:
+        description: "Per-request timeout in milliseconds"
+        required: true
+        default: "10000"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  production-cutover-verification:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run production cutover verification
+        working-directory: backend
+        env:
+          CUTOVER_BASE_URL: ${{ inputs.cutover_base_url }}
+          CUTOVER_AUTH_MODE: ${{ inputs.auth_mode }}
+          CUTOVER_DEV_EMAIL: ${{ secrets.CUTOVER_DEV_EMAIL }}
+          CUTOVER_OIDC_PROVIDER_TOKEN: ${{ secrets.CUTOVER_OIDC_PROVIDER_TOKEN }}
+          CUTOVER_ADMIN_EXPECTED_STATUS: ${{ inputs.admin_expected_status }}
+          CUTOVER_TIMEOUT_MS: ${{ inputs.timeout_ms }}
+        run: npm run cutover:verify
