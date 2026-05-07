@@ -25,6 +25,7 @@ Backend (see `backend/.env.example` for full list):
 - `FILE_BUCKET_ENDPOINT` (optional for S3-compatible providers)
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or workload identity)
 - `DATABASE_URL` — PostgreSQL connection string
+- `PG_BOSS_SCHEMA` (optional queue schema; default `pgboss`)
 - `ALLOWED_ORIGIN` — restrict CORS in production (e.g. `https://app.streetsmart.io`)
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — optional tuning
 - `AUDIT_FORWARD_URL` (optional SIEM/webhook sink)

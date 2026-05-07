@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
-import { appendFile } from 'node:fs/promises'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
@@ -110,6 +111,7 @@ async function audit(event, metadata = {}) {
     return
   }
 
+  await mkdir(dirname(AUDIT_SPOOL_FILE_PATH), { recursive: true })
   await appendFile(AUDIT_SPOOL_FILE_PATH, `${JSON.stringify(entry)}\n`, 'utf8')
 }
 
@@ -169,7 +171,7 @@ async function flushAuditForwarder() {
     throw new Error(`audit forwarder request failed with ${response.status}`)
   }
 
-  const ids = result.rows.map((row) => Number(row.id))
+  const ids = result.rows.map((row) => String(row.id))
   await query('UPDATE audit_events SET forwarded_at = now() WHERE id = ANY($1::bigint[])', [ids])
 }
 
@@ -343,6 +345,7 @@ function runAsyncTask(task, taskName, requestId) {
       error: error instanceof Error ? error.message : String(error),
     })
   })
+  return task
 }
 
 function parseRawBody(req) {
@@ -426,7 +429,7 @@ async function createPresignedUpload(fileName, contentType) {
   }
 
   const keyPrefix = FILE_BUCKET_KEY_PREFIX.replace(/^\/+|\/+$/g, '')
-  const key = `${keyPrefix}/${fileName}`
+  const key = keyPrefix ? `${keyPrefix}/${fileName}` : fileName
   const command = new PutObjectCommand({
     Bucket: FILE_BUCKET_NAME,
     Key: key,

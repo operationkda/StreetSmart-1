@@ -32,16 +32,24 @@ async function importData() {
   const payload = JSON.parse(raw)
   const tasks = Array.isArray(payload?.tasks) ? payload.tasks : []
 
-  for (const task of tasks) {
-    if (!task?.id || !task?.title || !task?.owner || !task?.created_at) continue
+  for (const [index, task] of tasks.entries()) {
+    if (!task?.id || !task?.title || !task?.owner || !task?.created_at) {
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          message: 'skipping invalid task record during import',
+          index,
+        }),
+      )
+      continue
+    }
     await query(
       `
       INSERT INTO tasks (id, title, owner, created_at)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (id) DO UPDATE
       SET title = EXCLUDED.title,
-          owner = EXCLUDED.owner,
-          created_at = EXCLUDED.created_at
+          owner = EXCLUDED.owner
       `,
       [task.id, task.title, task.owner, task.created_at],
     )

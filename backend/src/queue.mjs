@@ -48,7 +48,13 @@ export async function startQueue(options = {}) {
     schema: process.env.PG_BOSS_SCHEMA ?? 'pgboss',
   })
 
-  await boss.start()
+  try {
+    await boss.start()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    log('error', 'failed to start pg-boss queue', { error: message })
+    throw error
+  }
   for (const [name, handler] of handlers) {
     registerWorker(name, handler)
   }

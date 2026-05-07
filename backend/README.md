@@ -60,12 +60,14 @@ Required in production:
 - `AUTH_MODE=oidc` (required in production): `/api/auth/login` accepts `{ "providerToken": "<OIDC JWT>" }` and verifies issuer/audience/JWKS.
 
 `DEV_ADMIN_EMAILS` (comma-separated) grants `admin` role in dev mode for RBAC testing.
+`AUTH_OIDC_ROLE_CLAIM` selects the JWT claim used for RBAC role extraction (default: `role`, with fallback support for `https://streetsmart.io/role`).
 
 ## Background jobs
 
 `src/queue.mjs` uses **pg-boss** for durable background jobs when `DATABASE_URL` is configured, with an in-process fallback only for local no-DB mode.
 Register handlers at startup with `registerJobHandler(name, handler)` and
 dispatch work with `enqueue(name, data)`.
+Set `PG_BOSS_SCHEMA` to isolate queue tables if needed (default: `pgboss`).
 
 The example `send-welcome-email` job remains wired to run on login.
 
