@@ -6,11 +6,12 @@
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
-    "check": "node --check src/server.mjs src/db.mjs src/queue.mjs scripts/data-migration.mjs scripts/transform-base44-export.mjs scripts/uat-smoke.mjs",
+    "check": "node --check src/server.mjs src/db.mjs src/queue.mjs scripts/data-migration.mjs scripts/transform-base44-export.mjs scripts/uat-smoke.mjs scripts/cutover-readiness.mjs",
     "data:export": "node scripts/data-migration.mjs export",
     "data:import": "node scripts/data-migration.mjs import",
     "data:transform": "node scripts/transform-base44-export.mjs",
-    "uat:smoke": "node scripts/uat-smoke.mjs"
+    "uat:smoke": "node scripts/uat-smoke.mjs",
+    "cutover:verify": "node scripts/cutover-readiness.mjs"
   },
   "engines": {
     "node": ">=20"

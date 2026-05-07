@@ -98,3 +98,19 @@ npm run uat:smoke
 3. Restore PostgreSQL from the pre-deploy snapshot if required.
 4. Validate login, briefing, advisories, zones, intel log, and admin overview.
 5. Update the status page and incident log.
+
+## Production cutover verification workflow
+
+Before routing production traffic, run the manual Step 5 workflow:
+
+- Workflow: `Production Cutover Verification (Step 5)`
+- Inputs:
+  - `cutover_base_url` (required)
+  - `auth_mode` (`dev` or `oidc`)
+  - `admin_expected_status` (default `200`)
+  - `timeout_ms` (default `10000`)
+- Secrets:
+  - `CUTOVER_DEV_EMAIL` (required when `auth_mode=dev`)
+  - `CUTOVER_OIDC_PROVIDER_TOKEN` (required when `auth_mode=oidc`)
+
+This workflow runs a production-safe verification that checks auth login, briefing, advisories, zones, intel list, profile read, admin RBAC expectation, and upload presign.

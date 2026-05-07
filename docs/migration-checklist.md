@@ -60,3 +60,11 @@ Run the documented smoke checks after import:
 ### Step 5 — Production cutover only if needed
 
 If there is no legacy Base44 deployment or data to preserve, skip migration entirely and continue operating on the independent StreetSmart stack.
+
+If production cutover is required, run the non-destructive verification workflow before routing traffic:
+
+- GitHub Actions → `Production Cutover Verification (Step 5)` (manual dispatch)
+- required input: `cutover_base_url`
+- optional inputs: `auth_mode`, `admin_expected_status`, `timeout_ms`
+- required secret for `auth_mode=dev`: `CUTOVER_DEV_EMAIL`
+- required secret for `auth_mode=oidc`: `CUTOVER_OIDC_PROVIDER_TOKEN`
