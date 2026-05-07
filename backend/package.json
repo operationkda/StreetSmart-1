@@ -1,0 +1,17 @@
+{
+  "name": "streetsmart-backend",
+  "version": "1.0.0",
+  "description": "StreetSmart owned backend API service",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "check": "node --check src/server.mjs src/db.mjs src/queue.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
+  }
+}
