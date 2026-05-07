@@ -2,38 +2,35 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '@/api/client.js'
 import { useAppState } from '@/state/AppState.jsx'
+import { decodeTokenRole } from '@/lib/auth.js'
 
-function decodeTokenRole(token) {
-  if (!token) return null
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
-    return payload.role ?? null
-  } catch {
-    return null
-  }
+const cardStyle = {
+  border: '1px solid #243252',
+  borderRadius: 16,
+  padding: 16,
+  background: 'rgba(14, 22, 38, 0.88)',
 }
 
 export function AdminPage() {
   const { authToken } = useAppState()
   const navigate = useNavigate()
   const role = decodeTokenRole(authToken)
-
-  const [tasks, setTasks] = useState([])
+  const [overview, setOverview] = useState(null)
+  const [recentIntel, setRecentIntel] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Redirect unauthenticated or non-admin users before making any API call.
-    // The backend also enforces RBAC and will return 403 for non-admins.
     if (!authToken || role !== 'admin') {
       navigate('/', { replace: true })
       return
     }
 
     apiClient
-      .listAdminTasks()
+      .getAdminOverview()
       .then((response) => {
-        setTasks(response.tasks ?? [])
+        setOverview(response.overview)
+        setRecentIntel(response.recentIntel ?? [])
         setLoading(false)
       })
       .catch((requestError) => {
@@ -43,33 +40,54 @@ export function AdminPage() {
   }, [authToken, role, navigate])
 
   return (
-    <main style={{ maxWidth: 760, margin: '48px auto', padding: 16 }}>
-      <h1>Admin — All Tasks</h1>
+    <main style={{ maxWidth: 960, margin: '48px auto', padding: 16 }}>
+      <h1>Admin operations overview</h1>
       {loading ? <p>Loading…</p> : null}
       {error ? <p style={{ color: '#fca5a5' }}>{error}</p> : null}
-      {!loading && !error && tasks.length === 0 ? <p>No tasks found.</p> : null}
-      {tasks.length > 0 ? (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-          <thead>
-            <tr style={{ textAlign: 'left', borderBottom: '1px solid #304163' }}>
-              <th style={{ padding: '6px 8px' }}>Title</th>
-              <th style={{ padding: '6px 8px' }}>Owner</th>
-              <th style={{ padding: '6px 8px' }}>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tasks.map((task) => (
-              <tr key={task.id} style={{ borderBottom: '1px solid #1e2d4a' }}>
-                <td style={{ padding: '6px 8px' }}>{task.title}</td>
-                <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{task.owner}</td>
-                <td style={{ padding: '6px 8px', color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                  {new Date(task.created_at).toLocaleString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {overview ? (
+        <section style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginBottom: 24 }}>
+          <article style={cardStyle}>
+            <strong>{overview.totalIntelReports}</strong>
+            <p style={{ color: '#94a3b8', marginBottom: 0 }}>Total intel reports</p>
+          </article>
+          <article style={cardStyle}>
+            <strong>{overview.urgentIntelReports}</strong>
+            <p style={{ color: '#94a3b8', marginBottom: 0 }}>Urgent reports</p>
+          </article>
+          <article style={cardStyle}>
+            <strong>{overview.activeAdvisories}</strong>
+            <p style={{ color: '#94a3b8', marginBottom: 0 }}>Active advisories</p>
+          </article>
+          <article style={cardStyle}>
+            <strong>{overview.dangerZones}</strong>
+            <p style={{ color: '#94a3b8', marginBottom: 0 }}>Danger zones</p>
+          </article>
+        </section>
       ) : null}
+      {overview ? (
+        <p style={{ ...cardStyle, marginBottom: 24 }}>{overview.recommendedAction}</p>
+      ) : null}
+
+      <section>
+        <h2>Recent field reports</h2>
+        {!recentIntel.length ? <p>No intel reports captured yet.</p> : null}
+        {recentIntel.length > 0 ? (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {recentIntel.map((entry) => (
+              <article key={entry.id} style={cardStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <strong>{entry.title}</strong>
+                  <span style={{ textTransform: 'uppercase', fontSize: 12, color: '#fca5a5' }}>{entry.priority}</span>
+                </div>
+                <p style={{ color: '#94a3b8', marginBottom: 8 }}>
+                  {entry.owner} · {entry.location} · {new Date(entry.created_at).toLocaleString()}
+                </p>
+                <p style={{ marginBottom: 0 }}>{entry.details}</p>
+              </article>
+            ))}
+          </div>
+        ) : null}
+      </section>
     </main>
   )
 }

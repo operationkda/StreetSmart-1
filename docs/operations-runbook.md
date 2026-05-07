@@ -2,8 +2,8 @@
 
 ## Environments
 
-- `dev`: local/staging parity
-- `staging`: pre-prod verification
+- `dev`: local development and fast validation
+- `staging`: pre-production verification
 - `prod`: customer traffic
 
 ## Required environment variables
@@ -11,9 +11,9 @@
 Frontend:
 - `VITE_API_BASE_URL`
 
-Backend (see `backend/.env.example` for full list):
+Backend:
 - `PORT`
-- `JWT_SECRET` — ≥ 32 random bytes; rotate via secret manager
+- `JWT_SECRET`
 - `STRIPE_WEBHOOK_SECRET`
 - `AUTH_MODE=oidc`
 - `AUTH_OIDC_ISSUER`
@@ -22,41 +22,49 @@ Backend (see `backend/.env.example` for full list):
 - `FILE_BUCKET_BASE_URL`
 - `FILE_BUCKET_NAME`
 - `FILE_BUCKET_REGION`
-- `FILE_BUCKET_ENDPOINT` (optional for S3-compatible providers)
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or workload identity)
-- `DATABASE_URL` — PostgreSQL connection string
-- `PG_BOSS_SCHEMA` (optional queue schema; default `pgboss`)
-- `ALLOWED_ORIGIN` — restrict CORS in production (e.g. `https://app.streetsmart.io`)
-- `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — optional tuning
-- `AUDIT_FORWARD_URL` (optional SIEM/webhook sink)
+- `FILE_BUCKET_ENDPOINT` (optional)
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+- `DATABASE_URL`
+- `PG_BOSS_SCHEMA` (optional)
+- `ALLOWED_ORIGIN`
+- `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`
+- `AUDIT_FORWARD_URL` (optional)
+- `EMAIL_DELIVERY_MODE` / `EMAIL_WEBHOOK_URL` (optional briefing-delivery integration)
 
 ## Deploy checklist
 
-1. Run CI (`lint`, `typecheck`, `build` for frontend; `check` for backend)
-2. Apply DB migrations — migrations run automatically on startup via `migrate()` in `backend/src/db.mjs`
-3. Deploy backend (`docker build ./backend && docker push ...`, then update service)
-4. Deploy frontend (`npm run build` → upload `dist/` to CDN / static host)
-5. Run smoke tests:
-   - `POST /api/auth/login`:
-     - dev: body with `email`
-     - prod: body with `providerToken` from Auth0/Cognito/Clerk
-   - `GET /api/tasks` with Bearer token → 200
-   - `GET /api/admin/tasks` with admin role token → 200
-   - Stripe webhook replay via `stripe trigger payment_intent.succeeded`
-   - `POST /api/uploads/presign` returns `uploadUrl` + `fileUrl` + `expiresInSeconds`
-6. Monitor dashboards for 30 minutes before marking deploy stable
+1. Run frontend validation:
+   ```bash
+   cd /home/runner/work/StreetSmart-1/StreetSmart-1
+   npm run lint && npm run typecheck && npm run build
+   ```
+2. Run backend validation:
+   ```bash
+   cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
+   npm run check
+   ```
+3. Apply DB migrations by starting the backend in the target environment.
+4. Deploy backend container.
+5. Deploy frontend static artifact.
+6. Run smoke tests:
+   - `POST /api/auth/login`
+   - `GET /api/briefing`
+   - `GET /api/advisories`
+   - `GET /api/zones`
+   - `GET /api/intel`
+   - `GET /api/admin/overview` with an admin token
+   - `POST /api/uploads/presign`
+   - replay `payment_intent.succeeded` Stripe webhook
+7. Monitor logs and dashboards for 30 minutes before marking deploy stable.
 
-### Suggested command sequence (staging)
+## Suggested staging command sequence
 
 ```bash
-# frontend checks + artifact
+cd /home/runner/work/StreetSmart-1/StreetSmart-1
 npm run lint && npm run typecheck && npm run build
 
-# backend checks
-cd backend
+cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
 npm run check
-
-# backend smoke/UAT (dev auth mode example)
 UAT_BASE_URL=https://staging-api.example.com \
 UAT_AUTH_MODE=dev \
 UAT_DEV_EMAIL=admin@example.com \
@@ -64,10 +72,10 @@ UAT_ADMIN_EXPECTED_STATUS=200 \
 npm run uat:smoke
 ```
 
-OIDC smoke/UAT variant:
+OIDC variant:
 
 ```bash
-cd backend
+cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
 UAT_BASE_URL=https://staging-api.example.com \
 UAT_AUTH_MODE=oidc \
 UAT_OIDC_PROVIDER_TOKEN=<provider-jwt> \
@@ -77,16 +85,16 @@ npm run uat:smoke
 
 ## Monitoring and alerting
 
-- API latency/error-rate dashboards
-- Uptime checks for frontend and backend
-- Structured backend logs with request IDs (JSON, one entry per line)
-- Audit log stream (`audit` level entries) forwarded to your SIEM
-- Error tracker alerts to on-call
+- API latency and error-rate dashboards
+- uptime checks for frontend and backend
+- structured backend logs with request IDs
+- audit event forwarding to SIEM/webhook receivers
+- queue health and retry monitoring for briefing delivery jobs
 
 ## Rollback
 
-1. Roll back frontend artifact to previous CDN release
-2. Roll back backend container to the previous image tag
-3. If a migration ran, execute the inverse SQL or restore from the pre-deploy snapshot
-4. Validate core login + task CRUD flow
-5. Update status page
+1. Roll back frontend artifact to the previous release.
+2. Roll back backend container image.
+3. Restore PostgreSQL from the pre-deploy snapshot if required.
+4. Validate login, briefing, advisories, zones, intel log, and admin overview.
+5. Update the status page and incident log.
