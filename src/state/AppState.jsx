@@ -12,10 +12,9 @@ export function AppStateProvider({ children }) {
         setAuthToken(token)
         if (token) {
           localStorage.setItem('authToken', token)
-          return
+        } else {
+          localStorage.removeItem('authToken')
         }
-
-        localStorage.removeItem('authToken')
       },
     }),
     [authToken],

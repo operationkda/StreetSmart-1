@@ -6,7 +6,10 @@ on:
     branches:
       - main
       - master
-      - 'copilot/**'
+      - 'copilot/**' # Keep CI active for agent-generated branches during migration.
+
+permissions:
+  contents: read
 
 jobs:
   frontend-quality:
