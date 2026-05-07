@@ -2,18 +2,31 @@ import { createContext, useContext, useMemo, useState } from 'react'
 
 const AppStateContext = createContext(undefined)
 
+function readStoredToken() {
+  try {
+    return localStorage.getItem('authToken') ?? ''
+  } catch {
+    return ''
+  }
+}
+
 export function AppStateProvider({ children }) {
-  const [authToken, setAuthToken] = useState(() => localStorage.getItem('authToken') ?? '')
+  const [authToken, setAuthToken] = useState(readStoredToken)
 
   const value = useMemo(
     () => ({
       authToken,
       setAuthToken: (token) => {
         setAuthToken(token)
-        if (token) {
-          localStorage.setItem('authToken', token)
-        } else {
-          localStorage.removeItem('authToken')
+
+        try {
+          if (token) {
+            localStorage.setItem('authToken', token)
+          } else {
+            localStorage.removeItem('authToken')
+          }
+        } catch {
+          // Ignore storage errors and keep state in memory.
         }
       },
     }),

@@ -3,11 +3,13 @@ import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT ?? 4000)
-const JWT_SECRET = process.env.JWT_SECRET ?? (IS_PRODUCTION ? '' : 'dev-secret-change-me')
 const TOKEN_TTL_SECONDS = Number(process.env.TOKEN_TTL_SECONDS ?? 3600)
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? (IS_PRODUCTION ? '' : 'whsec_dev')
 const STRIPE_WEBHOOK_TOLERANCE_SECONDS = Number(process.env.STRIPE_WEBHOOK_TOLERANCE_SECONDS ?? 300)
+const STRIPE_WEBHOOK_MAX_FUTURE_SECONDS = Number(process.env.STRIPE_WEBHOOK_MAX_FUTURE_SECONDS ?? 60)
 const FILE_BUCKET_BASE_URL = process.env.FILE_BUCKET_BASE_URL ?? 'https://example-bucket.local'
+
+const JWT_SECRET = process.env.JWT_SECRET || (IS_PRODUCTION ? '' : 'dev-secret-change-me')
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || (IS_PRODUCTION ? '' : 'whsec_dev')
 
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required in production')
@@ -28,7 +30,7 @@ function log(level, message, metadata = {}) {
 }
 
 // Prototype-only storage: in-memory array is not durable and not safe for horizontal scaling.
-const tasks = [{ id: randomUUID(), title: 'Migrate off Base44', owner: 'demo-user' }]
+const tasks = []
 
 function send(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -129,8 +131,11 @@ function verifyStripeSignature(rawBody, signatureHeader) {
     return false
   }
 
-  const ageInSeconds = Math.floor(Date.now() / 1000) - parsed.timestamp
-  if (ageInSeconds > STRIPE_WEBHOOK_TOLERANCE_SECONDS || ageInSeconds < -STRIPE_WEBHOOK_TOLERANCE_SECONDS) {
+  const now = Math.floor(Date.now() / 1000)
+  const ageInSeconds = now - parsed.timestamp
+  const futureSkew = parsed.timestamp - now
+
+  if (ageInSeconds > STRIPE_WEBHOOK_TOLERANCE_SECONDS || futureSkew > STRIPE_WEBHOOK_MAX_FUTURE_SECONDS) {
     return false
   }
 
@@ -139,6 +144,17 @@ function verifyStripeSignature(rawBody, signatureHeader) {
   const left = Buffer.from(parsed.signature)
   const right = Buffer.from(computed)
   return left.length === right.length && timingSafeEqual(left, right)
+}
+
+function sanitizeFileName(fileName) {
+  const safe = String(fileName ?? '').replace(/[^a-zA-Z0-9._-]/g, '_')
+  const trimmed = safe.replace(/^_+|_+$/g, '')
+
+  if (!trimmed) {
+    return `${randomUUID()}.bin`
+  }
+
+  return trimmed.slice(0, 120)
 }
 
 const server = createServer(async (req, res) => {
@@ -198,7 +214,7 @@ const server = createServer(async (req, res) => {
       }
 
       const body = await parseBody(req)
-      const fileName = body.fileName ?? `${randomUUID()}.bin`
+      const fileName = sanitizeFileName(body.fileName)
       send(res, 200, {
         uploadUrl: `${FILE_BUCKET_BASE_URL}/upload/${fileName}`,
         fileUrl: `${FILE_BUCKET_BASE_URL}/files/${fileName}`,
