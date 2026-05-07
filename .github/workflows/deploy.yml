@@ -1,0 +1,224 @@
+name: Build and Deploy
+
+# Triggered automatically on version tags (e.g. v1.2.3) or manually for ad-hoc
+# builds. The deploy job is gated on the "production" GitHub environment so that
+# required reviewers and environment-scoped secrets apply.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to build and push (e.g. v1.2.3 or staging)'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: read
+  packages: write   # required to push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/streetsmart-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/streetsmart-frontend
+
+jobs:
+  # ── Step 1: validate both packages before building any image ─────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Backend syntax check
+        working-directory: backend
+        run: npm run check
+
+  # ── Step 2: build and push backend Docker image ───────────────────────────────
+  build-backend:
+    name: Build backend image
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      image_tag: ${{ steps.resolve-tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: resolve-tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "image_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ steps.resolve-tag.outputs.image_tag }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Step 3: build and push frontend Docker image ──────────────────────────────
+  build-frontend:
+    name: Build frontend image
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      image_tag: ${{ steps.resolve-tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: resolve-tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "image_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: true
+          # VITE_API_BASE_URL is baked into the static build at image-build time.
+          # Set it as a repository variable in GitHub (Settings → Variables → Actions).
+          build-args: VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ steps.resolve-tag.outputs.image_tag }}
+            ${{ env.FRONTEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Step 4: deploy images to production ───────────────────────────────────────
+  #
+  # This job is gated on the "production" GitHub environment. Configure
+  # required reviewers and environment-scoped secrets in:
+  #   Settings → Environments → production
+  #
+  # Choose exactly one deployment block below and uncomment it. Delete the
+  # others. See docs/hosting.md for platform setup instructions.
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend]
+    environment: production
+    steps:
+      - name: Show built images
+        run: |
+          echo "Backend : ${{ env.BACKEND_IMAGE }}:${{ needs.build-backend.outputs.image_tag }}"
+          echo "Frontend: ${{ env.FRONTEND_IMAGE }}:${{ needs.build-frontend.outputs.image_tag }}"
+
+      # ── Fly.io ────────────────────────────────────────────────────────────────
+      # Prerequisites:
+      #   1. fly.toml in ./backend  (flyctl launch --no-deploy)
+      #   2. fly.toml in .          (flyctl launch --no-deploy) for frontend
+      #   3. FLY_API_TOKEN set in the "production" environment secrets
+      #
+      # - name: Install flyctl
+      #   uses: superfly/flyctl-actions/setup-flyctl@master
+      #
+      # - name: Deploy backend to Fly.io
+      #   env:
+      #     FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      #   run: |
+      #     flyctl deploy --image ${{ env.BACKEND_IMAGE }}:${{ needs.build-backend.outputs.image_tag }} \
+      #       --app streetsmart-backend
+      #
+      # - name: Deploy frontend to Fly.io
+      #   env:
+      #     FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      #   run: |
+      #     flyctl deploy --image ${{ env.FRONTEND_IMAGE }}:${{ needs.build-frontend.outputs.image_tag }} \
+      #       --app streetsmart-frontend
+
+      # ── Render (via deploy hook) ───────────────────────────────────────────────
+      # Prerequisites:
+      #   1. Create Render services using the ghcr.io images.
+      #   2. Copy each service's deploy hook URL into environment secrets:
+      #      RENDER_BACKEND_DEPLOY_HOOK, RENDER_FRONTEND_DEPLOY_HOOK
+      #
+      # - name: Trigger Render backend deploy
+      #   run: |
+      #     curl -fsSL -X POST "${{ secrets.RENDER_BACKEND_DEPLOY_HOOK }}"
+      #
+      # - name: Trigger Render frontend deploy
+      #   run: |
+      #     curl -fsSL -X POST "${{ secrets.RENDER_FRONTEND_DEPLOY_HOOK }}"
+
+      # ── AWS ECS (rolling update) ───────────────────────────────────────────────
+      # Prerequisites:
+      #   1. ECS cluster, task definitions, and services already exist.
+      #   2. AWS credentials in environment secrets:
+      #      AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+      #
+      # - uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Deploy backend to ECS
+      #   run: |
+      #     aws ecs update-service \
+      #       --cluster streetsmart \
+      #       --service streetsmart-backend \
+      #       --force-new-deployment
+      #
+      # - name: Deploy frontend to ECS
+      #   run: |
+      #     aws ecs update-service \
+      #       --cluster streetsmart \
+      #       --service streetsmart-frontend \
+      #       --force-new-deployment
