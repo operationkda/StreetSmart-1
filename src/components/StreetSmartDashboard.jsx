@@ -96,7 +96,9 @@ export function StreetSmartDashboard() {
   const [intel, setIntel] = useState([])
   const [profile, setProfile] = useState(null)
   const [profileMessage, setProfileMessage] = useState('')
+  const [profileMessageType, setProfileMessageType] = useState('info')
   const [intelMessage, setIntelMessage] = useState('')
+  const [intelMessageType, setIntelMessageType] = useState('info')
   const [savingProfile, setSavingProfile] = useState(false)
   const [creatingIntel, setCreatingIntel] = useState(false)
   const [deletingId, setDeletingId] = useState('')
@@ -174,6 +176,7 @@ export function StreetSmartDashboard() {
   async function onCreateIntel(event) {
     event.preventDefault()
     setIntelMessage('')
+    setIntelMessageType('info')
     setCreatingIntel(true)
 
     try {
@@ -181,10 +184,12 @@ export function StreetSmartDashboard() {
       setIntel((current) => [response.intel, ...current])
       setIntelDraft({ title: '', details: '', priority: 'moderate', location: '' })
       setIntelMessage('Field report logged.')
+      setIntelMessageType('success')
       const briefingResponse = await apiClient.getBriefing()
       setBriefing(briefingResponse.briefing)
     } catch (requestError) {
       setIntelMessage(requestError.message)
+      setIntelMessageType('error')
     } finally {
       setCreatingIntel(false)
     }
@@ -193,15 +198,18 @@ export function StreetSmartDashboard() {
   async function onDeleteIntel(id) {
     setDeletingId(id)
     setIntelMessage('')
+    setIntelMessageType('info')
 
     try {
       await apiClient.deleteIntel(id)
       setIntel((current) => current.filter((entry) => entry.id !== id))
       setIntelMessage('Field report removed.')
+      setIntelMessageType('success')
       const briefingResponse = await apiClient.getBriefing()
       setBriefing(briefingResponse.briefing)
     } catch (requestError) {
       setIntelMessage(requestError.message)
+      setIntelMessageType('error')
     } finally {
       setDeletingId('')
     }
@@ -211,6 +219,7 @@ export function StreetSmartDashboard() {
     event.preventDefault()
     setSavingProfile(true)
     setProfileMessage('')
+    setProfileMessageType('info')
 
     try {
       const response = await apiClient.updateProfile(profileDraft)
@@ -227,8 +236,10 @@ export function StreetSmartDashboard() {
       const briefingResponse = await apiClient.getBriefing()
       setBriefing(briefingResponse.briefing)
       setProfileMessage('Security posture updated.')
+      setProfileMessageType('success')
     } catch (requestError) {
       setProfileMessage(requestError.message)
+      setProfileMessageType('error')
     } finally {
       setSavingProfile(false)
     }
@@ -330,7 +341,9 @@ export function StreetSmartDashboard() {
             <button type="submit" disabled={creatingIntel} style={{ padding: '10px 14px', borderRadius: 10 }}>
               {creatingIntel ? 'Logging…' : 'Log field report'}
             </button>
-            {intelMessage ? <p style={{ margin: 0, color: intelMessage.includes('failed') ? '#fca5a5' : '#93c5fd' }}>{intelMessage}</p> : null}
+            {intelMessage ? (
+              <p style={{ margin: 0, color: intelMessageType === 'error' ? '#fca5a5' : '#93c5fd' }}>{intelMessage}</p>
+            ) : null}
           </form>
           <IntelList intel={intel} onDelete={onDeleteIntel} deletingId={deletingId} />
         </div>
@@ -413,7 +426,9 @@ export function StreetSmartDashboard() {
               <button type="submit" disabled={savingProfile} style={{ padding: '10px 14px', borderRadius: 10 }}>
                 {savingProfile ? 'Saving…' : 'Save security posture'}
               </button>
-              {profileMessage ? <p style={{ margin: 0, color: profileMessage.includes('required') ? '#fca5a5' : '#93c5fd' }}>{profileMessage}</p> : null}
+              {profileMessage ? (
+                <p style={{ margin: 0, color: profileMessageType === 'error' ? '#fca5a5' : '#93c5fd' }}>{profileMessage}</p>
+              ) : null}
             </form>
           ) : null}
         </div>

@@ -47,6 +47,13 @@ const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || (IS_PRODUCTIO
 const DB_ENABLED = Boolean(process.env.DATABASE_URL)
 const VALID_PRIORITIES = new Set(['low', 'moderate', 'high', 'critical'])
 
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message)
+    this.statusCode = statusCode
+  }
+}
+
 const ZONES = [
   {
     id: 'zone-harbor-safehouse',
@@ -158,6 +165,10 @@ const s3Client = hasS3Config
 function log(level, message, metadata = {}) {
   const entry = { timestamp: new Date().toISOString(), level, message, ...metadata }
   console[level === 'error' ? 'error' : 'log'](JSON.stringify(entry))
+}
+
+function badRequest(message) {
+  return new HttpError(400, message)
 }
 
 async function audit(event, metadata = {}) {
@@ -376,7 +387,7 @@ async function parseBody(req) {
     const body = raw.toString('utf8')
     return body ? JSON.parse(body) : {}
   } catch {
-    throw new Error('Invalid JSON body')
+    throw badRequest('Invalid JSON body')
   }
 }
 
@@ -508,16 +519,16 @@ function sanitizeProfileRow(row) {
 
 function normalizeEmergencyContacts(value) {
   if (!Array.isArray(value)) {
-    throw new Error('emergencyContacts must be an array')
+    throw badRequest('emergencyContacts must be an array')
   }
 
   if (value.length > 5) {
-    throw new Error('emergencyContacts must contain at most 5 contacts')
+    throw badRequest('emergencyContacts must contain at most 5 contacts')
   }
 
   return value.map((contact, index) => {
     if (!contact || typeof contact !== 'object' || Array.isArray(contact)) {
-      throw new Error(`emergencyContacts[${index}] must be an object`)
+      throw badRequest(`emergencyContacts[${index}] must be an object`)
     }
 
     const name = String(contact.name ?? '').trim()
@@ -525,15 +536,15 @@ function normalizeEmergencyContacts(value) {
     const relationship = String(contact.relationship ?? '').trim()
 
     if (!name) {
-      throw new Error(`emergencyContacts[${index}].name is required`)
+      throw badRequest(`emergencyContacts[${index}].name is required`)
     }
 
     if (!phone) {
-      throw new Error(`emergencyContacts[${index}].phone is required`)
+      throw badRequest(`emergencyContacts[${index}].phone is required`)
     }
 
     if (name.length > 120 || phone.length > 120 || relationship.length > 120) {
-      throw new Error(`emergencyContacts[${index}] fields must be at most 120 characters`)
+      throw badRequest(`emergencyContacts[${index}] fields must be at most 120 characters`)
     }
 
     return {
@@ -555,12 +566,12 @@ function normalizeProfileUpdate(body) {
   })
 
   if (errors.length) {
-    throw new Error(errors[0])
+    throw badRequest(errors[0])
   }
 
   const zoneExists = ZONES.some((zone) => zone.id === body.homeZoneId)
   if (!zoneExists) {
-    throw new Error('homeZoneId must reference a known zone')
+    throw badRequest('homeZoneId must reference a known zone')
   }
 
   return {
@@ -1089,8 +1100,7 @@ const server = createServer(async (req, res) => {
     send(res, 404, { error: 'not found' })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'internal server error'
-    const statusCode =
-      message === 'Invalid JSON body' || /required|must be|known zone|at most/.test(message) ? 400 : 500
+    const statusCode = error instanceof HttpError ? error.statusCode : 500
 
     log('error', 'request failed', {
       requestId,
