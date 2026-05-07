@@ -29,6 +29,7 @@ function log(level, message, metadata = {}) {
   console[level === 'error' ? 'error' : 'log'](JSON.stringify(entry))
 }
 
+// TODO: Replace with persistent database storage before production deployment.
 // Prototype-only storage: in-memory array is not durable and not safe for horizontal scaling.
 const tasks = []
 
@@ -42,20 +43,24 @@ function send(res, statusCode, payload) {
   res.end(payload ? JSON.stringify(payload) : '')
 }
 
-function parseBody(req) {
+function parseRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
     req.on('data', (chunk) => chunks.push(chunk))
-    req.on('end', () => {
-      try {
-        const body = Buffer.concat(chunks).toString('utf8')
-        resolve(body ? JSON.parse(body) : {})
-      } catch {
-        reject(new Error('Invalid JSON body'))
-      }
-    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', () => reject(new Error('Request stream error')))
   })
+}
+
+async function parseBody(req) {
+  const raw = await parseRawBody(req)
+
+  try {
+    const body = raw.toString('utf8')
+    return body ? JSON.parse(body) : {}
+  } catch {
+    throw new Error('Invalid JSON body')
+  }
 }
 
 function issueToken(subject) {
@@ -133,9 +138,9 @@ function verifyStripeSignature(rawBody, signatureHeader) {
 
   const now = Math.floor(Date.now() / 1000)
   const ageInSeconds = now - parsed.timestamp
-  const futureSkew = parsed.timestamp - now
+  const futureTimestampSeconds = parsed.timestamp - now
 
-  if (ageInSeconds > STRIPE_WEBHOOK_TOLERANCE_SECONDS || futureSkew > STRIPE_WEBHOOK_MAX_FUTURE_SECONDS) {
+  if (ageInSeconds > STRIPE_WEBHOOK_TOLERANCE_SECONDS || futureTimestampSeconds > STRIPE_WEBHOOK_MAX_FUTURE_SECONDS) {
     return false
   }
 
@@ -147,14 +152,15 @@ function verifyStripeSignature(rawBody, signatureHeader) {
 }
 
 function sanitizeFileName(fileName) {
-  const safe = String(fileName ?? '').replace(/[^a-zA-Z0-9._-]/g, '_')
-  const trimmed = safe.replace(/^_+|_+$/g, '')
+  const raw = String(fileName ?? '').trim()
+  const extensionMatch = raw.match(/\.([a-zA-Z0-9]{1,8})$/)
+  const extension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '.bin'
+  const baseName = extensionMatch ? raw.slice(0, -extension.length) : raw
 
-  if (!trimmed) {
-    return `${randomUUID()}.bin`
-  }
+  const safeBaseName = baseName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '')
+  const normalizedBaseName = safeBaseName || randomUUID()
 
-  return trimmed.slice(0, 120)
+  return `${normalizedBaseName.slice(0, 96)}${extension}`
 }
 
 const server = createServer(async (req, res) => {
@@ -224,23 +230,15 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.url === '/api/webhooks/stripe' && req.method === 'POST') {
-      const chunks = []
-      req.on('data', (chunk) => chunks.push(chunk))
-      req.on('error', () => {
-        log('error', 'request stream error', { requestId, path: req.url, method: req.method })
-        send(res, 500, { error: 'request error' })
-      })
-      req.on('end', () => {
-        const rawBody = Buffer.concat(chunks)
-        const signature = req.headers['stripe-signature']
+      const rawBody = await parseRawBody(req)
+      const signature = req.headers['stripe-signature']
 
-        if (!verifyStripeSignature(rawBody, typeof signature === 'string' ? signature : '')) {
-          send(res, 400, { error: 'invalid signature' })
-          return
-        }
+      if (!verifyStripeSignature(rawBody, typeof signature === 'string' ? signature : '')) {
+        send(res, 400, { error: 'invalid signature' })
+        return
+      }
 
-        send(res, 200, { received: true })
-      })
+      send(res, 200, { received: true })
       return
     }
 

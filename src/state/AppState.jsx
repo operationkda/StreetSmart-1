@@ -10,6 +10,11 @@ function readStoredToken() {
   }
 }
 
+/**
+ * Provides application-level auth token state and persistence.
+ * @param {{children: import('react').ReactNode}} props
+ * @returns {JSX.Element}
+ */
 export function AppStateProvider({ children }) {
   const [authToken, setAuthToken] = useState(readStoredToken)
 
@@ -36,6 +41,10 @@ export function AppStateProvider({ children }) {
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>
 }
 
+/**
+ * Reads app state context and throws when missing provider.
+ * @returns {{authToken: string, setAuthToken: (token: string) => void}}
+ */
 export function useAppState() {
   const context = useContext(AppStateContext)
   if (!context) {

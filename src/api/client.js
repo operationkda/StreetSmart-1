@@ -25,7 +25,10 @@ async function parseErrorResponse(response) {
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers ?? {})
-  headers.set('Content-Type', 'application/json')
+
+  if (!headers.has('Content-Type') && options.body) {
+    headers.set('Content-Type', 'application/json')
+  }
 
   const token = getStoredToken()
   if (token) {
