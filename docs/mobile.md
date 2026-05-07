@@ -54,7 +54,7 @@ device APIs. The config lives in `capacitor.config.json` at the repo root.
 
 - Node.js ≥ 18 and the project's npm dependencies installed.
 - **iOS**: macOS, Xcode ≥ 15, CocoaPods installed (`gem install cocoapods`).
-- **Android**: Android Studio, JDK 17, Android SDK (API 33+).
+- **Android**: Android Studio, JDK 21, Android SDK (API 33+).
 
 ### First-time native project setup
 
