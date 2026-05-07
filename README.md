@@ -55,12 +55,13 @@ npm run check
 
 ## Architecture and operations docs
 
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/architecture.md`
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/operations-runbook.md`
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/migration-checklist.md`
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/hosting.md`
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/docs/secrets.md`
-- `/home/runner/work/StreetSmart-1/StreetSmart-1/backend/README.md`
+- `docs/launch-checklist.md` — end-to-end checklist from new repo to working on your phone
+- `docs/architecture.md`
+- `docs/operations-runbook.md`
+- `docs/migration-checklist.md`
+- `docs/hosting.md`
+- `docs/secrets.md`
+- `backend/README.md`
 
 ## Direction
 
