@@ -3,9 +3,12 @@
   "short_name": "StreetSmart",
   "description": "Tactical operations console — threat briefings, zones, advisories, and intel.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
+  "categories": ["security", "utilities"],
   "icons": [
     {
       "src": "/icons/icon-192.png",

@@ -2,8 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Mobile viewport: prevent user scaling so standalone feels native -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- PWA manifest (used by Chrome, Edge, Samsung Internet) -->
     <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS / iPadOS PWA meta tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="StreetSmart" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+
+    <!-- Theme colour for browser chrome (Android Chrome / Edge) -->
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="msapplication-TileColor" content="#0f172a" />
+
+    <!-- Preconnect to backend so the first API call is faster -->
+    <link rel="preconnect" href="/" />
+
     <title>StreetSmart</title>
   </head>
   <body>

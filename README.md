@@ -56,6 +56,7 @@ npm run check
 ## Architecture and operations docs
 
 - `docs/launch-checklist.md` — end-to-end checklist from new repo to working on your phone
+- `docs/mobile.md` — PWA and Capacitor native packaging strategy
 - `docs/architecture.md`
 - `docs/operations-runbook.md`
 - `docs/migration-checklist.md`
