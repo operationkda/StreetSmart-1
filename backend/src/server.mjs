@@ -1,12 +1,31 @@
 import { createServer } from 'node:http'
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT ?? 4000)
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me'
+const JWT_SECRET = process.env.JWT_SECRET ?? (IS_PRODUCTION ? '' : 'dev-secret-change-me')
 const TOKEN_TTL_SECONDS = Number(process.env.TOKEN_TTL_SECONDS ?? 3600)
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? 'whsec_dev'
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? (IS_PRODUCTION ? '' : 'whsec_dev')
 const STRIPE_WEBHOOK_TOLERANCE_SECONDS = Number(process.env.STRIPE_WEBHOOK_TOLERANCE_SECONDS ?? 300)
 const FILE_BUCKET_BASE_URL = process.env.FILE_BUCKET_BASE_URL ?? 'https://example-bucket.local'
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required in production')
+}
+
+if (!STRIPE_WEBHOOK_SECRET) {
+  throw new Error('STRIPE_WEBHOOK_SECRET is required in production')
+}
+
+function log(level, message, metadata = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...metadata,
+  }
+  console[level === 'error' ? 'error' : 'log'](JSON.stringify(entry))
+}
 
 // Prototype-only storage: in-memory array is not durable and not safe for horizontal scaling.
 const tasks = [{ id: randomUUID(), title: 'Migrate off Base44', owner: 'demo-user' }]
@@ -123,6 +142,8 @@ function verifyStripeSignature(rawBody, signatureHeader) {
 }
 
 const server = createServer(async (req, res) => {
+  const requestId = randomUUID()
+
   try {
     if (req.method === 'OPTIONS') {
       send(res, 204)
@@ -190,6 +211,7 @@ const server = createServer(async (req, res) => {
       const chunks = []
       req.on('data', (chunk) => chunks.push(chunk))
       req.on('error', () => {
+        log('error', 'request stream error', { requestId, path: req.url, method: req.method })
         send(res, 500, { error: 'request error' })
       })
       req.on('end', () => {
@@ -210,10 +232,19 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'internal server error'
     const statusCode = message === 'Invalid JSON body' ? 400 : 500
-    send(res, statusCode, { error: message })
+
+    log('error', 'request failed', {
+      requestId,
+      path: req.url,
+      method: req.method,
+      statusCode,
+      error: message,
+    })
+
+    send(res, statusCode, { error: message, requestId })
   }
 })
 
 server.listen(PORT, () => {
-  console.log(`StreetSmart backend listening on http://localhost:${PORT}`)
+  log('info', 'StreetSmart backend listening', { port: PORT, environment: process.env.NODE_ENV ?? 'development' })
 })
