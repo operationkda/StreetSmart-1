@@ -24,13 +24,14 @@ const FILE_BUCKET_ENDPOINT = process.env.FILE_BUCKET_ENDPOINT ?? ''
 const FILE_BUCKET_KEY_PREFIX = process.env.FILE_BUCKET_KEY_PREFIX ?? 'uploads'
 const FILE_BUCKET_PRESIGN_EXPIRES_SECONDS = Number(process.env.FILE_BUCKET_PRESIGN_EXPIRES_SECONDS ?? 300)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*'
-const AUTH_MODE =
-  process.env.AUTH_MODE ?? (IS_PRODUCTION ? 'oidc' : 'dev') // supported: "dev", "oidc"
+const VALID_AUTH_MODES = ['dev', 'oidc']
+const AUTH_MODE = process.env.AUTH_MODE ?? (IS_PRODUCTION ? 'oidc' : 'dev')
 const AUTH_OIDC_ISSUER = process.env.AUTH_OIDC_ISSUER ?? ''
 const AUTH_OIDC_AUDIENCE = process.env.AUTH_OIDC_AUDIENCE ?? ''
 const AUTH_OIDC_JWKS_URI =
   process.env.AUTH_OIDC_JWKS_URI ?? (AUTH_OIDC_ISSUER ? `${AUTH_OIDC_ISSUER}/.well-known/jwks.json` : '')
 const AUTH_OIDC_ROLE_CLAIM = process.env.AUTH_OIDC_ROLE_CLAIM ?? 'role'
+const AUTH_OIDC_ROLE_FALLBACK_CLAIM = 'https://streetsmart.io/role'
 const DEV_ADMIN_EMAILS = new Set(
   String(process.env.DEV_ADMIN_EMAILS ?? '')
     .split(',')
@@ -57,8 +58,8 @@ if (!STRIPE_WEBHOOK_SECRET) {
   throw new Error('STRIPE_WEBHOOK_SECRET is required in production')
 }
 
-if (!['dev', 'oidc'].includes(AUTH_MODE)) {
-  throw new Error('AUTH_MODE must be one of: dev, oidc')
+if (!VALID_AUTH_MODES.includes(AUTH_MODE)) {
+  throw new Error(`AUTH_MODE must be one of: ${VALID_AUTH_MODES.join(', ')}`)
 }
 
 if (AUTH_MODE === 'oidc' && (!AUTH_OIDC_ISSUER || !AUTH_OIDC_AUDIENCE)) {
@@ -100,7 +101,6 @@ function log(level, message, metadata = {}) {
  * @param {Record<string, unknown>} [metadata]
  */
 async function audit(event, metadata = {}) {
-  const entry = { event, metadata, createdAt: new Date().toISOString() }
   log('info', 'audit', { event, ...metadata })
 
   if (DB_ENABLED) {
@@ -111,12 +111,13 @@ async function audit(event, metadata = {}) {
     return
   }
 
+  const entry = { event, metadata, createdAt: new Date().toISOString() }
   await mkdir(dirname(AUDIT_SPOOL_FILE_PATH), { recursive: true })
   await appendFile(AUDIT_SPOOL_FILE_PATH, `${JSON.stringify(entry)}\n`, 'utf8')
 }
 
 function getRoleFromClaims(claims) {
-  const value = claims[AUTH_OIDC_ROLE_CLAIM] ?? claims.role ?? claims['https://streetsmart.io/role']
+  const value = claims[AUTH_OIDC_ROLE_CLAIM] ?? claims.role ?? claims[AUTH_OIDC_ROLE_FALLBACK_CLAIM]
   if (typeof value === 'string') return value === 'admin' ? 'admin' : 'user'
   if (Array.isArray(value) && value.includes('admin')) return 'admin'
   return 'user'
@@ -171,7 +172,7 @@ async function flushAuditForwarder() {
     throw new Error(`audit forwarder request failed with ${response.status}`)
   }
 
-  const ids = result.rows.map((row) => String(row.id))
+  const ids = result.rows.map((row) => row.id)
   await query('UPDATE audit_events SET forwarded_at = now() WHERE id = ANY($1::bigint[])', [ids])
 }
 
@@ -338,6 +339,13 @@ function send(res, statusCode, payload) {
   res.end(payload !== undefined ? JSON.stringify(payload) : '')
 }
 
+/**
+ * Fire-and-forget wrapper for async side effects.
+ * Logs failures without interrupting the request-response cycle.
+ * @param {Promise<unknown>} task
+ * @param {string} taskName
+ * @param {string} requestId
+ */
 function runAsyncTask(task, taskName, requestId) {
   task.catch((error) => {
     log('error', `${taskName} failed`, {
@@ -548,12 +556,12 @@ const server = createServer(async (req, res) => {
       }
 
       const token = issueToken(sub, role)
-      runAsyncTask(audit('login', { requestId, sub, role, ip: clientIp }), 'audit log', requestId)
+      void runAsyncTask(audit('login', { requestId, sub, role, ip: clientIp }), 'audit log', requestId)
 
       // Enqueue a post-login job (e.g. update last-seen timestamp, sync session).
       // This runs on every login. Rename or gate it behind a "new user" check when
       // you have a users table and can detect first-time logins.
-      runAsyncTask(enqueue('send-welcome-email', { sub, role }), 'job enqueue', requestId)
+      void runAsyncTask(enqueue('send-welcome-email', { sub, role }), 'job enqueue', requestId)
 
       send(res, 200, { token })
       return
@@ -595,7 +603,11 @@ const server = createServer(async (req, res) => {
       }
 
       const task = await dbCreateTask(body.title.trim(), auth.sub)
-      runAsyncTask(audit('task.create', { requestId, sub: auth.sub, taskId: task.id }), 'audit log', requestId)
+      void runAsyncTask(
+        audit('task.create', { requestId, sub: auth.sub, taskId: task.id }),
+        'audit log',
+        requestId,
+      )
       send(res, 201, { task })
       return
     }
@@ -622,7 +634,11 @@ const server = createServer(async (req, res) => {
 
       const fileName = sanitizeFileName(body.fileName)
       const presigned = await createPresignedUpload(fileName, body.contentType)
-      runAsyncTask(audit('upload.presign', { requestId, sub: auth.sub, fileName }), 'audit log', requestId)
+      void runAsyncTask(
+        audit('upload.presign', { requestId, sub: auth.sub, fileName }),
+        'audit log',
+        requestId,
+      )
       send(res, 200, presigned)
       return
     }
@@ -636,7 +652,7 @@ const server = createServer(async (req, res) => {
         return
       }
       const tasks = await dbListAllTasks()
-      runAsyncTask(
+      void runAsyncTask(
         audit('admin.tasks.list', { requestId, sub: auth.sub, count: tasks.length }),
         'audit log',
         requestId,
@@ -659,7 +675,7 @@ const server = createServer(async (req, res) => {
       }
 
       // TODO: parse the Stripe event type and dispatch to appropriate handlers.
-      runAsyncTask(audit('stripe.webhook', { requestId }), 'audit log', requestId)
+      void runAsyncTask(audit('stripe.webhook', { requestId }), 'audit log', requestId)
       send(res, 200, { received: true })
       return
     }

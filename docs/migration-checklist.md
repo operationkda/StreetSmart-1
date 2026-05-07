@@ -40,7 +40,7 @@ npm run data:import -- ./tmp/tasks-export.json
 
 Recommended production procedure:
 1. Export Base44 records to JSON/CSV.
-2. Transform to match `tasks` schema (`id`, `title`, `owner`, `created_at`), including timestamp normalization (UTC ISO-8601), null handling, and ID conflict rules.
+2. Transform to match `tasks` schema (`id`, `title`, `owner`, `created_at`), including timestamp normalization (UTC ISO-8601), null handling, and ID conflict rules (upsert by `id`, preserve existing `created_at`).
 3. Snapshot target PostgreSQL.
 4. Run import in staging first; validate row counts and spot-check records.
 5. Repeat in production during low-traffic window.

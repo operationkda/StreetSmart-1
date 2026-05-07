@@ -48,6 +48,7 @@ async function importData() {
       INSERT INTO tasks (id, title, owner, created_at)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (id) DO UPDATE
+      -- Preserve original created_at for existing rows; only sync mutable fields.
       SET title = EXCLUDED.title,
           owner = EXCLUDED.owner
       `,
