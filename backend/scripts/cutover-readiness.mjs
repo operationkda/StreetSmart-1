@@ -45,16 +45,24 @@ async function request(path, options = {}) {
 }
 
 async function run() {
+  const normalizedDevEmail = DEV_EMAIL.trim()
+  const normalizedOidcProviderToken = OIDC_PROVIDER_TOKEN.trim()
+
   assert(Boolean(BASE_URL), 'CUTOVER_BASE_URL is required')
   assert(['dev', 'oidc'].includes(AUTH_MODE), 'CUTOVER_AUTH_MODE must be dev or oidc', { AUTH_MODE })
   if (AUTH_MODE === 'dev') {
-    assert(Boolean(DEV_EMAIL.trim()), 'CUTOVER_DEV_EMAIL is required in dev mode')
+    assert(Boolean(normalizedDevEmail), 'CUTOVER_DEV_EMAIL is required in dev mode')
   }
   if (AUTH_MODE === 'oidc') {
-    assert(Boolean(OIDC_PROVIDER_TOKEN), 'CUTOVER_OIDC_PROVIDER_TOKEN is required in oidc mode')
+    assert(Boolean(normalizedOidcProviderToken), 'CUTOVER_OIDC_PROVIDER_TOKEN is required in oidc mode')
+    assert(
+      normalizedOidcProviderToken.length > MIN_JWT_TOKEN_LENGTH,
+      'CUTOVER_OIDC_PROVIDER_TOKEN does not look like a valid JWT',
+    )
   }
 
-  const loginPayload = AUTH_MODE === 'dev' ? { email: DEV_EMAIL } : { providerToken: OIDC_PROVIDER_TOKEN }
+  const loginPayload =
+    AUTH_MODE === 'dev' ? { email: normalizedDevEmail } : { providerToken: normalizedOidcProviderToken }
   const loginResult = await request('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
