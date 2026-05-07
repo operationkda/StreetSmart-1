@@ -77,7 +77,7 @@ npm run uat:smoke
 Use the read-focused cutover verification for production readiness checks:
 
 ```bash
-cd /home/runner/work/StreetSmart-1/StreetSmart-1/backend
+cd backend
 CUTOVER_BASE_URL=https://api.example.com \
 CUTOVER_AUTH_MODE=dev \
 CUTOVER_DEV_EMAIL=admin@example.com \

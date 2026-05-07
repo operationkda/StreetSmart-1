@@ -4,7 +4,7 @@ const DEV_EMAIL = process.env.CUTOVER_DEV_EMAIL ?? 'admin@example.com'
 const OIDC_PROVIDER_TOKEN = process.env.CUTOVER_OIDC_PROVIDER_TOKEN ?? ''
 const ADMIN_EXPECTED_STATUS = Number(process.env.CUTOVER_ADMIN_EXPECTED_STATUS ?? 200)
 const REQUEST_TIMEOUT_MS = Number(process.env.CUTOVER_TIMEOUT_MS ?? 10_000)
-const MIN_JWT_CHAR_THRESHOLD_FOR_HEADER_PAYLOAD = 50
+const MIN_TOKEN_LENGTH = 50
 
 function assert(condition, message, metadata = {}) {
   if (condition) return
@@ -55,7 +55,7 @@ async function run() {
   })
   const token = loginResult.body?.token
   assert(
-    typeof token === 'string' && token.length > MIN_JWT_CHAR_THRESHOLD_FOR_HEADER_PAYLOAD,
+    typeof token === 'string' && token.length > MIN_TOKEN_LENGTH,
     'login did not return a valid token',
   )
   console.log(JSON.stringify({ level: 'info', check: 'auth.login', status: 'ok' }))
