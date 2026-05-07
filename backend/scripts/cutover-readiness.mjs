@@ -4,7 +4,8 @@ const DEV_EMAIL = process.env.CUTOVER_DEV_EMAIL ?? 'admin@example.com'
 const OIDC_PROVIDER_TOKEN = process.env.CUTOVER_OIDC_PROVIDER_TOKEN ?? ''
 const ADMIN_EXPECTED_STATUS = Number(process.env.CUTOVER_ADMIN_EXPECTED_STATUS ?? 200)
 const REQUEST_TIMEOUT_MS = Number(process.env.CUTOVER_TIMEOUT_MS ?? 10_000)
-const MIN_TOKEN_LENGTH = 50
+// JWTs include three base64url segments plus delimiters; short values are almost always malformed.
+const MIN_JWT_TOKEN_LENGTH = 50
 
 function assert(condition, message, metadata = {}) {
   if (condition) return
@@ -31,6 +32,13 @@ async function request(path, options = {}) {
       }
     }
     return { response, body }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`, {
+        cause: { path },
+      })
+    }
+    throw error
   } finally {
     clearTimeout(timeout)
   }
@@ -39,6 +47,9 @@ async function request(path, options = {}) {
 async function run() {
   assert(Boolean(BASE_URL), 'CUTOVER_BASE_URL is required')
   assert(['dev', 'oidc'].includes(AUTH_MODE), 'CUTOVER_AUTH_MODE must be dev or oidc', { AUTH_MODE })
+  if (AUTH_MODE === 'dev') {
+    assert(Boolean(DEV_EMAIL.trim()), 'CUTOVER_DEV_EMAIL is required in dev mode')
+  }
   if (AUTH_MODE === 'oidc') {
     assert(Boolean(OIDC_PROVIDER_TOKEN), 'CUTOVER_OIDC_PROVIDER_TOKEN is required in oidc mode')
   }
@@ -55,7 +66,7 @@ async function run() {
   })
   const token = loginResult.body?.token
   assert(
-    typeof token === 'string' && token.length > MIN_TOKEN_LENGTH,
+    typeof token === 'string' && token.length > MIN_JWT_TOKEN_LENGTH,
     'login did not return a valid token',
   )
   console.log(JSON.stringify({ level: 'info', check: 'auth.login', status: 'ok' }))
