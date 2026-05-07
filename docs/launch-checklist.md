@@ -122,7 +122,7 @@ Update each item as it is completed.
 See `docs/mobile.md` for the complete native strategy, auth token handling, deep links,
 push notifications, and CI pipeline setup.
 
-- [ ] Ensure macOS + Xcode ≥ 15 available for iOS, Android Studio + JDK 17 for Android.
+- [ ] Ensure macOS + Xcode ≥ 15 available for iOS, Android Studio + JDK 21 for Android.
 - [ ] Run `npm run build` to produce the `dist/` web build.
 - [ ] Initialize native platforms (run once):
   ```bash
