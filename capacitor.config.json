@@ -1,0 +1,13 @@
+{
+  "appId": "com.operationkda.streetsmart",
+  "appName": "StreetSmart",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    }
+  }
+}
