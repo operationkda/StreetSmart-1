@@ -34,7 +34,7 @@ jobs:
       # ── Web build ─────────────────────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install npm dependencies
@@ -61,7 +61,7 @@ jobs:
           npx cap add android 2>/dev/null || true
           npx cap sync android
 
-      # ── Gradle build ──────────────────────────────────────────────────────────
+      # ── Gradle build ─────────────────────────────────────────────────────────
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
 
@@ -69,7 +69,7 @@ jobs:
         working-directory: android
         run: ./gradlew bundleRelease --no-daemon
 
-      # ── Signing ───────────────────────────────────────────────────────────────
+      # ── Signing ──────────────────────────────────────────────────────────────
       - name: Sign AAB with jarsigner
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
