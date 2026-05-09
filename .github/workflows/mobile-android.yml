@@ -75,6 +75,7 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
+          trap 'rm -f /tmp/signing.jks' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
           keytool -list \
             -keystore /tmp/signing.jks \
@@ -82,11 +83,13 @@ jobs:
 
       - name: Sign release AAB with jarsigner
         env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           trap 'rm -f /tmp/signing.jks' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
           jarsigner -verbose \
             -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore /tmp/signing.jks \
