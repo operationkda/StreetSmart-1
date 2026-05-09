@@ -10,7 +10,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      base: '/StreetSmart-1/
+      base: '/StreetSmart-1/',
       registerType: 'autoUpdate',
       // Use the hand-crafted manifest.json rather than letting the plugin generate one.
       manifest: false,
