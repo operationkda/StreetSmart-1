@@ -69,15 +69,22 @@ jobs:
         working-directory: android
         run: ./gradlew bundleRelease --no-daemon
 
-      # ── Signing ──────────────────────────────────────────────────────────────
-      - name: Sign AAB with jarsigner
+      # ── Signing (decode + validate keystore before jarsigner for clearer errors) ──
+      - name: Decode and validate Android signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
+          keytool -list -keystore /tmp/signing.jks -storepass "$STORE_PASSWORD" > /dev/null
+
+      - name: Sign release AAB with jarsigner
+        env:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
+          trap 'rm -f /tmp/signing.jks' EXIT
           jarsigner -verbose \
             -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore /tmp/signing.jks \
@@ -85,7 +92,6 @@ jobs:
             -keypass "$KEY_PASSWORD" \
             android/app/build/outputs/bundle/release/app-release.aab \
             "$KEY_ALIAS"
-          rm -f /tmp/signing.jks
 
       # ── Artifacts ─────────────────────────────────────────────────────────────
       - name: Upload AAB as workflow artifact
