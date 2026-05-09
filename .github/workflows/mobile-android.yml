@@ -76,7 +76,9 @@ jobs:
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /tmp/signing.jks
-          keytool -list -keystore /tmp/signing.jks -storepass "$STORE_PASSWORD" > /dev/null
+          keytool -list \
+            -keystore /tmp/signing.jks \
+            -storepass:env STORE_PASSWORD > /dev/null
 
       - name: Sign release AAB with jarsigner
         env:
@@ -88,8 +90,8 @@ jobs:
           jarsigner -verbose \
             -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore /tmp/signing.jks \
-            -storepass "$STORE_PASSWORD" \
-            -keypass "$KEY_PASSWORD" \
+            -storepass:env STORE_PASSWORD \
+            -keypass:env KEY_PASSWORD \
             android/app/build/outputs/bundle/release/app-release.aab \
             "$KEY_ALIAS"
 
